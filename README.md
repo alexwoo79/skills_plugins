@@ -4,6 +4,19 @@ Backup of the Codex skills, Codex plugin skills and Omarchy shell plugins
 installed on this machine (Omarchy / Arch Linux, Hyprland), so they can be
 restored on a fresh system.
 
+## Platform: Linux only
+
+Everything in this repo is written for **Linux** and has only been tested on
+this machine's setup — Omarchy (Arch Linux) with Hyprland and Quickshell, the
+local MCP binaries, and tools under `~/.local/bin`.
+
+The scripts assume Linux paths, Wayland/Hyprland APIs, systemd user services,
+and Omarchy-specific files (`~/.config/omarchy/`, `omarchy-*` commands), so
+they will not run unmodified on macOS, Windows, or a plain Linux distribution.
+
+**If you want to use any of these skills or plugins on another system, please
+contact the author first: [@alexwoo79](https://github.com/alexwoo79).**
+
 ## What is here
 
 ### `codex-skills/` — skills installed in `~/.codex/skills/`
