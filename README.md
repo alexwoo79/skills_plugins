@@ -101,19 +101,44 @@ marketplace at the plugin source again, or by copying it back into
 | `markdown-ppt` | the `markdown-ppt` CLI engine |
 | `omarchy-proxyctl`, proxy plugin | `proxyctl` on PATH or `~/.local/bin/proxyctl` |
 
-## Install the Omarchy plugin (details)
+## Install the Omarchy plugin
+
+The paths below are relative to this repository, so start in the clone:
+
+```sh
+git clone https://github.com/alexwoo79/skills_plugins.git
+cd skills_plugins
+
+./omarchy-plugins/io.github.alexwoo79.proxy/install.sh              # right section
+./omarchy-plugins/io.github.alexwoo79.proxy/install.sh --section center
+```
+
+`install.sh` copies the folder into `~/.config/omarchy/plugins/`, asks the
+running shell to rescan, enables the widget and prints the result. Re-running
+it just refreshes the installed copy.
+
+By hand it is three steps, and the middle one is the step that is easy to miss:
 
 ```sh
 cp -a omarchy-plugins/io.github.alexwoo79.proxy ~/.config/omarchy/plugins/
+omarchy-shell shell rescanPlugins      # or: omarchy restart shell
 omarchy plugin enable io.github.alexwoo79.proxy --section right
+omarchy plugin list | grep alexwoo79   # verify
 ```
 
-The Omarchy shell hot-reloads plugins from `~/.config/omarchy/plugins/`, so the
-widget appears immediately; `omarchy plugin disable io.github.alexwoo79.proxy`
-removes it from the bar again.
+### If the install does not work
 
-`omarchy plugin add <git-url>` expects the repository root to *be* the plugin,
-so this repo is installed by copying the folder.
+- `plugin 'io.github.alexwoo79.proxy' is not known` — `omarchy plugin enable`
+  asks the **running shell**, which only knows plugins it has already
+  discovered. Run `omarchy-shell shell rescanPlugins` (or `omarchy restart
+  shell`) after copying and try again. This is the usual cause.
+- `cp: cannot stat 'omarchy-plugins/...'` — the command was run outside the
+  clone. `cd` into the repository first, or use absolute paths.
+- `omarchy plugin add <git-url>` will not help here: it expects the repository
+  root to *be* a single plugin, and this repo holds a skill set plus a plugin,
+  so the folder is copied instead.
+- Remove the widget again with `omarchy plugin disable io.github.alexwoo79.proxy`
+  or, including its folder, `omarchy plugin remove io.github.alexwoo79.proxy`.
 
 ### Plugin behaviour worth knowing
 

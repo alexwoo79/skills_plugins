@@ -138,6 +138,31 @@ or from the Omarchy settings panel.
 - `curl` and `omarchy-launch-floating-terminal-with-presentation` (already on
   Omarchy)
 
+## Install
+
+From this folder (or from a clone of
+[skills_plugins](https://github.com/alexwoo79/skills_plugins), where the plugin
+lives under `omarchy-plugins/`):
+
+```sh
+./install.sh                 # into the right section of the bar
+./install.sh --section left  # left / center / right
+```
+
+By hand:
+
+```sh
+cp -a . ~/.config/omarchy/plugins/io.github.alexwoo79.proxy
+omarchy-shell shell rescanPlugins
+omarchy plugin enable io.github.alexwoo79.proxy --section right
+```
+
+The rescan is what makes a freshly copied folder installable:
+`omarchy plugin enable` asks the running shell to enable the plugin, and the
+shell only knows plugins it has already discovered — skip it and you get
+`plugin 'io.github.alexwoo79.proxy' is not known`. `omarchy restart shell`
+works too, it is just slower.
+
 ## Disable
 
 ```sh
