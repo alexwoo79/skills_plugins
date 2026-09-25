@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.alexwoo79.proxy",
+  "name": "Proxy",
+  "version": "1.0.0",
+  "author": "alexwoo79",
+  "license": "MIT",
+  "description": "System proxy state in the bar, driven by proxyctl: on/off, the endpoint in use, a live health probe through the proxy, and click to toggle.",
+  "kinds": ["bar-widget"],
+  "entryPoints": { "barWidget": "BarWidget.qml" },
+  "barWidget": {
+    "displayName": "Proxy (proxyctl)",
+    "description": "Click opens a panel: endpoint input, system proxy and TUN switches, live health and exit IP, and the state of every layer proxyctl writes",
+    "category": "System",
+    "defaultSection": "right",
+    "allowMultiple": false,
+    "aliases": ["proxy", "proxyctl", "system-proxy"],
+    "defaults": {
+      "address": "10.10.10.111:7890",
+      "checkInterval": 60,
+      "healthCheck": true,
+      "proxyctlPath": ""
+    },
+    "schema": [
+      {
+        "key": "address",
+        "type": "string",
+        "label": "Proxy address",
+        "description": "host:port enabled when the proxy is off. Use an endpoint that is actually serving a proxy — the address drifts when DHCP moves it.",
+        "defaultValue": "10.10.10.111:7890"
+      },
+      {
+        "key": "checkInterval",
+        "type": "integer",
+        "label": "Health check interval (seconds)",
+        "description": "How often the widget probes the proxy with curl. The probe only runs while the proxy is on.",
+        "min": 30,
+        "max": 3600,
+        "step": 30,
+        "defaultValue": 60
+      },
+      {
+        "key": "healthCheck",
+        "type": "boolean",
+        "label": "Health check",
+        "description": "Probe through the proxy so the bar can tell 'on' from 'working'. Turn off to keep the widget display-only.",
+        "defaultValue": true
+      },
+      {
+        "key": "proxyctlPath",
+        "type": "path",
+        "label": "proxyctl binary",
+        "description": "Leave empty to use ~/.local/bin/proxyctl.",
+        "defaultValue": ""
+      }
+    ]
+  }
+}

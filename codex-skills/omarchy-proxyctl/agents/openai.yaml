@@ -1,0 +1,4 @@
+interface:
+  display_name: "Omarchy Proxyctl"
+  short_description: "Manage the Omarchy system proxy via proxyctl"
+  default_prompt: "Use $omarchy-proxyctl to turn the system proxy on and verify that browsers and apps connect through it."
