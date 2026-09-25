@@ -41,7 +41,7 @@ Read [references/omarchy-layers.md](references/omarchy-layers.md) for per-layer 
 | `proxyctl tun on --address HOST:PORT` | Network-layer TUN via mihomo (no per-tool config needed) |
 | `proxyctl port N` | Which local process listens on port N |
 
-The binary is `~/.local/bin/proxyctl` (a mise copy is also on PATH). Source: `~/Documents/ChatGPT/omarchy/go_coding/proxyctl` — rebuild with `go build -o proxyctl .` if the binary is missing or older than the source.
+Install the binary with Go: `go install github.com/alexwoo79/go_coding/proxyctl@latest` (it lands in `$(go env GOPATH)/bin`, usually `~/go/bin`). It is expected at `~/.local/bin/proxyctl` or anywhere on `PATH`; source lives at `~/Documents/ChatGPT/omarchy/go_coding/proxyctl`, so rebuild with `go build -o proxyctl .` if the binary is missing or older than the source.
 
 ## Enable or switch the proxy
 

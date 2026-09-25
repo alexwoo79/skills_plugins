@@ -46,6 +46,17 @@ The proxy skill and the proxy widget both drive
 owns the proxy state for the desktop session, the systemd user session, the
 browser flags, git and the dev tools.
 
+### Install proxyctl (required by both proxy pieces)
+
+```sh
+go install github.com/alexwoo79/go_coding/proxyctl@latest
+```
+
+The binary lands in `$(go env GOPATH)/bin` (usually `~/go/bin`). Put that
+directory on `PATH`, or copy the binary to `~/.local/bin/proxyctl`, which is
+where the widget looks by default; the plugin's `proxyctlPath` setting
+overrides that path.
+
 ## Restore
 
 ```sh

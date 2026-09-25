@@ -126,8 +126,15 @@ or from the Omarchy settings panel.
 
 ## Dependencies
 
-- `proxyctl` (toggles the whole system: gsettings, session env, browser flags,
-  git, dev tools)
+- `proxyctl` — install it with Go, then make sure it is on `PATH` or at
+  `~/.local/bin/proxyctl`:
+
+  ```sh
+  go install github.com/alexwoo79/go_coding/proxyctl@latest
+  ```
+
+  It toggles the whole system: gsettings, session env, browser flags, git and
+  the dev tools.
 - `curl` and `omarchy-launch-floating-terminal-with-presentation` (already on
   Omarchy)
 
