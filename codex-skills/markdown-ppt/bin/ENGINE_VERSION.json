@@ -1,0 +1,16 @@
+{
+  "engine": "markdown-ppt-cli",
+  "snapshot_version": "1.0.0",
+  "source_repo": "/home/alex/Documents/github/aitalk/wails",
+  "source_commit": "35134c747bb7673258d3b9a6999cad3f8b37ba55",
+  "source_dirty": false,
+  "built_at": "2026-09-23T10:35:45+08:00",
+  "cli_binaries": [
+    "markdown-ppt"
+  ],
+  "targets": [
+    "host"
+  ],
+  "cross": false,
+  "frontend_dist": "embedded (frontend/dist，含 headless.html)"
+}

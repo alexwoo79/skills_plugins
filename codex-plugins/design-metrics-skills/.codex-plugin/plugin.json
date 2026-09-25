@@ -1,0 +1,30 @@
+{
+  "name": "design-metrics-skills",
+  "version": "1.0.0+codex.20260919095821",
+  "description": "建筑设计测算 skill 集：可研阶段用地测算与楼型组合建议、方案阶段按城市细则计算建筑面积指标",
+  "author": {
+    "name": "Alex"
+  },
+  "keywords": [
+    "建筑设计",
+    "可研测算",
+    "建筑面积",
+    "指标核算",
+    "容积率"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "建筑设计测算",
+    "shortDescription": "可研测算与方案指标计算两个 skill",
+    "longDescription": "包含两个 skill：keyan-calculation 由用地条件、产品配比与楼型候选做可研阶段测算，出指标、楼型组合建议、数据报表与报告；building-metrics-calculation 按上海/长沙/合肥/贵阳四套城市细则，从 DWG 面积线与属性表算出计容面积、容积率、建筑密度、地库与户数等报批指标。两者数值均来自本地脚本计算，不编造。",
+    "developerName": "Alex",
+    "category": "Productivity",
+    "capabilities": [
+      "Write"
+    ],
+    "defaultPrompt": [
+      "用可研测算 skill 根据用地条件、产品配比和楼型候选做可研阶段测算，先体检输入完整度再出报表和报告。",
+      "用方案指标计算 skill 按项目所在地的城市细则计算建筑面积指标，先做数据契约校验再出指标表。"
+    ]
+  }
+}

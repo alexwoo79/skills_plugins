@@ -1,0 +1,22 @@
+{
+  "插件版本": "1.0.0+codex.20260919095821",
+  "打包时间": "2026-09-19T17:58:21+08:00",
+  "引擎来源仓库": "/home/alex/Documents/github/building_metrics",
+  "引擎模块": {
+    "design_metrics.py": "9556f791766042ef",
+    "city_rules.py": "69b9ad2211680c5f",
+    "data_loader.py": "5dc9a7a60bbf803d",
+    "metrics_helpers.py": "720c45a1a61a09fa"
+  },
+  "校验脚本": "64cea96fa0e0a9e1",
+  "依赖": [
+    "polars==1.36.1",
+    "fastexcel==0.16.0",
+    "xlsxwriter==3.2.9",
+    "openpyxl==3.1.5"
+  ],
+  "说明": "本目录是随包分发的引擎快照。metrics_cli.py 优先使用 --repo / 环境变量 / skill_config.json 指定的外部仓库；都没有时才回退到本快照。计算结果的「引擎来源」字段会标明用的是哪一个。",
+  "提交": "0361da7c53cc16833efde65cdb7eb7d7bef02849",
+  "提交时间": "2026-03-28T14:13:43+08:00",
+  "是否有未提交改动": true
+}

@@ -1,25 +1,51 @@
 # skills_plugins
 
-Personal Codex skills and Omarchy shell plugins, kept in one place so they can
-be restored on a fresh machine.
+Backup of the Codex skills, Codex plugin skills and Omarchy shell plugins
+installed on this machine (Omarchy / Arch Linux, Hyprland), so they can be
+restored on a fresh system.
 
-| Path | What it is |
+## What is here
+
+### `codex-skills/` — skills installed in `~/.codex/skills/`
+
+| Skill | What it does |
 | --- | --- |
-| `codex-skills/omarchy-proxyctl/` | Codex skill: manage the system-wide proxy on Omarchy/Hyprland with `proxyctl` — inspect state, verify an endpoint, enable/disable/restore, find a drifted address, and diagnose why browsers, terminals, git or dev tools still bypass the proxy. |
-| `omarchy-plugins/io.github.alexwoo79.proxy/` | Omarchy bar widget: proxy state in one line (glyph + `off` / `on 87ms` / `on !`) with a details panel — editable endpoint, system proxy and TUN switches, live health and exit IP, and the state of every layer `proxyctl` writes. |
+| `data-clean/` | Declarative data cleaning through the local `dataflow-mcp` binary (profile → plan → pipeline → export) |
+| `data-workflow/` | Parse, validate and build dataflow-studio workflow JSON, backed by real data profiles |
+| `markdown-ppt/` | Markdown → PPTX/SVG/HTML/Reveal.js/Word decks via the `markdown-ppt` CLI |
+| `omarchy-proxyctl/` | Manage the system proxy on Omarchy/Hyprland with `proxyctl`: inspect, verify an endpoint, on/off/restore, address discovery, TUN, troubleshooting |
+| `smartboard-analysis/` | Smartboard data dashboards and six-part insight reports through the local `smartboard-mcp` binary |
 
-Both are driven by [`proxyctl`](https://github.com/alexwoo79/go_coding/tree/main/proxyctl),
-which owns the proxy state for the desktop session, the systemd user session,
-the browser flags, git and the dev tools.
+### `codex-plugins/` — skills that arrive through a Codex plugin
 
-## Install the skill
+| Plugin | What it does |
+| --- | --- |
+| `design-metrics-skills/` | Personal plugin with two building-design skills — `building-metrics-calculation` (city-rule metric calculation) and `keyan-calculation` (feasibility-stage measurement) — plus the shared Python `engine/` |
+
+### `omarchy-plugins/` — Omarchy shell plugins
+
+| Plugin | What it does |
+| --- | --- |
+| `io.github.alexwoo79.proxy/` | Bar widget: proxy state in one line (glyph + `off` / `on 87ms` / `on !`) with a details panel — editable endpoint, system proxy and TUN switches, live health and exit IP, and the state of every layer `proxyctl` writes |
+
+The proxy skill and the proxy widget both drive
+[`proxyctl`](https://github.com/alexwoo79/go_coding/tree/main/proxyctl), which
+owns the proxy state for the desktop session, the systemd user session, the
+browser flags, git and the dev tools.
+
+## Restore
 
 ```sh
-cp -a codex-skills/omarchy-proxyctl ~/.codex/skills/
+# every Codex skill
+for d in codex-skills/*/; do cp -a "$d" ~/.codex/skills/; done
+
+# the Omarchy bar plugin
+cp -a omarchy-plugins/io.github.alexwoo79.proxy ~/.config/omarchy/plugins/
+omarchy plugin enable io.github.alexwoo79.proxy --section right
 ```
 
-Codex picks it up from `~/.codex/skills/`; invoke it as `$omarchy-proxyctl`.
-It ships three helper scripts under `scripts/`:
+Codex picks skills up from `~/.codex/skills/`; the proxy skill is invoked as
+`$omarchy-proxyctl`. It ships three helper scripts under `scripts/`:
 
 ```sh
 verify-proxy.sh HOST:PORT     # usable / unreliable / dead, with exit codes 0/3/1
@@ -27,7 +53,31 @@ find-lan-proxy.sh             # sweep the local subnet for a running proxy
 check-browser-proxy.sh        # prove Chromium really uses the proxy
 ```
 
-## Install the plugin
+`codex-plugins/design-metrics-skills/` is a copy of the installed plugin
+payload (manifest, engine, skills). Restore it by pointing the personal
+marketplace at the plugin source again, or by copying it back into
+`~/.codex/plugins/cache/personal/design-metrics-skills/<version>/`.
+
+## Deliberately not stored
+
+| Missing piece | How to get it back |
+| --- | --- |
+| `markdown-ppt/bin/markdown-ppt` (22 MB build artifact) | Rebuild with `make cli` in the source repo recorded in `bin/ENGINE_VERSION.json`, or run that package's `install.sh` |
+| `design-metrics-skills/.venv` | `python -m venv .venv && .venv/bin/pip install -r engine/requirements.txt` |
+| `~/.codex/skills/.system/` | Ships with Codex |
+| `~/.codex/skills/omarchy`, `~/.codex/skills/diagnose-crash` | Symlinks into the Omarchy package: `ln -s /usr/share/omarchy/default/agents/skills/omarchy ~/.codex/skills/omarchy` (same for `diagnose-crash`) |
+
+## Requirements per skill
+
+| Skill | Needs |
+| --- | --- |
+| `data-clean`, `data-workflow` | local `dataflow-mcp` binary |
+| `smartboard-analysis` | local `smartboard-mcp` binary |
+| `design-metrics-skills` | Python plus `engine/requirements.txt` |
+| `markdown-ppt` | the `markdown-ppt` CLI engine |
+| `omarchy-proxyctl`, proxy plugin | `proxyctl` on PATH or `~/.local/bin/proxyctl` |
+
+## Install the Omarchy plugin (details)
 
 ```sh
 cp -a omarchy-plugins/io.github.alexwoo79.proxy ~/.config/omarchy/plugins/
@@ -41,7 +91,7 @@ removes it from the bar again.
 `omarchy plugin add <git-url>` expects the repository root to *be* the plugin,
 so this repo is installed by copying the folder.
 
-### Behaviour worth knowing
+### Plugin behaviour worth knowing
 
 - Clicking the bar widget only opens the panel — proxy state changes happen
   exclusively from the switches inside it, never from a stray bar click.

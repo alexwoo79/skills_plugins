@@ -1,0 +1,4 @@
+interface:
+  display_name: "可研测算与楼型组合"
+  short_description: "用地条件、产品配比与楼型试算，出数据报表与测算报告"
+  default_prompt: "用 $keyan-calculation 根据基础用地信息、产品配比与楼型候选做可研测算，先体检输入条件完整度并给出补充建议，再输出数据报表与测算报告。"

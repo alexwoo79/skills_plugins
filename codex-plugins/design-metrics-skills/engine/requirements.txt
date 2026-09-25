@@ -1,0 +1,4 @@
+polars==1.36.1
+fastexcel==0.16.0
+xlsxwriter==3.2.9
+openpyxl==3.1.5

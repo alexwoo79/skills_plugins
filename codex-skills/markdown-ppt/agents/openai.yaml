@@ -1,0 +1,4 @@
+interface:
+  display_name: "Markdown PPT"
+  short_description: "用工具内核把 Markdown 导出为 PPTX/HTML/SVG/Reveal 演示文稿"
+  default_prompt: "Use $markdown-ppt to turn my Markdown outline into a PPTX deck and an HTML version."

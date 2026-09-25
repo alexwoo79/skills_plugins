@@ -1,0 +1,4 @@
+interface:
+  display_name: "方案指标计算"
+  short_description: "按城市细则算建筑面积指标，支持试算与项目对比"
+  default_prompt: "用 $building-metrics-calculation 按项目所在地的城市规则计算方案指标：先做数据契约校验，再出计容面积、容积率、建筑密度、地库与户数等指标，并说明静默按 0 的项。"
