@@ -157,6 +157,7 @@ function toggleArgs(proxyOn, endpoint, proxyctl) {
 
 // TUN is network-layer: one upstream for every app, so the same endpoint the
 // panel shows is the one it hands to mihomo.
+// `on` is the DESIRED state, not the current one.
 function tunArgs(on, endpoint, proxyctl) {
   var binary = String(proxyctl == null ? "" : proxyctl).trim()
   if (binary === "") return []
@@ -164,6 +165,29 @@ function tunArgs(on, endpoint, proxyctl) {
   var address = String(endpoint == null ? "" : endpoint).trim()
   if (!isAddress(address)) return []
   return [binary, "tun", "on", "--address", address]
+}
+
+// Probing the TUN path means not naming a proxy at all: the kernel routes the
+// request through mihomo, and --noproxy * keeps any inherited proxy variables
+// out of the measurement.
+function tunProbeArgs() {
+  return [
+    "curl", "-sS",
+    "-m", String(PROBE_TIMEOUT_SECONDS),
+    "--noproxy", "*",
+    "-o", "/dev/null",
+    "-w", "%{http_code} %{time_total}",
+    PROBE_URL
+  ]
+}
+
+function tunExitIpArgs() {
+  return [
+    "curl", "-sS",
+    "-m", String(PROBE_TIMEOUT_SECONDS),
+    "--noproxy", "*",
+    PROBE_EXIT_IP_URL
+  ]
 }
 
 function statusArgs(proxyctl) {
@@ -257,9 +281,20 @@ function parseTools(text) {
 
 // Rows for the panel's layer section: one per thing proxyctl writes, so a
 // half-applied state is visible without reading proxyctl's report by hand.
+// While TUN runs it owns the network layer, which makes the per-app layers
+// (desktop proxy, session env, browser flags, git, dev tools) irrelevant — so
+// the section collapses to the TUN row plus one explanatory line.
 function layerRows(state, tools) {
   var rows = []
   if (!state) return rows
+  var tunValue = state.tun.service === "running"
+    ? ("running" + (state.tun.iface !== "" ? " (" + state.tun.iface + ")" : ""))
+    : state.tun.service
+  if (state.tun.service === "running") {
+    rows.push({ label: "TUN", value: tunValue, ok: true })
+    rows.push({ label: "Per-app layers", value: "not used while TUN is on", ok: false })
+    return rows
+  }
   rows.push({
     label: "Desktop proxy",
     value: state.desktop.on ? state.desktop.endpoint : "not set",
@@ -289,9 +324,7 @@ function layerRows(state, tools) {
   }
   rows.push({
     label: "TUN",
-    value: state.tun.service === "running"
-      ? ("running" + (state.tun.iface !== "" ? " (" + state.tun.iface + ")" : ""))
-      : state.tun.service,
+    value: tunValue,
     ok: state.tun.service === "running"
   })
   return rows
@@ -309,9 +342,12 @@ function healthFailed(health) {
   return !!health && health.ok !== true
 }
 
-function barLabel(proxyOn, busy, health) {
-  if (!proxyOn) return "off"
+// TUN is a second, independent way to be proxied: with it running the bar says
+// "tun" even when the per-app system proxy is off, because every app is routed
+// at the network layer.
+function barLabel(proxyOn, busy, health, tunRunning) {
   if (busy) return "\u2026"
+  if (!proxyOn) return tunRunning === true ? "tun" : "off"
   if (!health) return "on"
   if (health.ok) return health.ms >= 0 ? "on " + health.ms + "ms" : "on"
   return "on !"
@@ -328,21 +364,24 @@ function clockTime(epochMs) {
 
 // Panel line for the probe result. "on" and "working" are different facts, so
 // the panel states the measured latency rather than a bare checkmark.
-function healthLine(proxyOn, busy, health, probeEnabled) {
-  if (!proxyOn) return "proxy is off"
+// TUN counts as an active path: with it on, "off" for the per-app proxy does
+// not mean the machine is unproxied.
+function healthLine(proxyOn, busy, health, probeEnabled, tunRunning) {
+  if (!proxyOn && !tunRunning) return "no proxy is running"
   if (busy) return "checking\u2026"
   if (probeEnabled === false) return "health check disabled in settings"
   if (!health) return "not checked yet"
+  var path = (tunRunning && !proxyOn) ? "via TUN \u00b7 " : ""
   if (health.ok) {
     var detail = health.ms >= 0 ? health.ms + "ms" : "reachable"
     var at = clockTime(health.at)
-    return at === "" ? detail : detail + " (checked " + at + ")"
+    return path + (at === "" ? detail : detail + " (checked " + at + ")")
   }
-  return "failed: " + (health.error || "unknown error")
+  return path + "failed: " + (health.error || "unknown error")
 }
 
-function exitIpLine(proxyOn, busy, exitIp) {
-  if (!proxyOn) return "\u2014"
+function exitIpLine(proxyOn, busy, exitIp, tunRunning) {
+  if (!proxyOn && !tunRunning) return "\u2014"
   if (busy) return "checking\u2026"
   return exitIp !== "" ? exitIp : "\u2014"
 }
@@ -351,12 +390,13 @@ function exitIpLine(proxyOn, busy, exitIp) {
 // shows, in a shape that reads well pasted into a chat or an issue.
 function statusSummary(state) {
   var on = !!(state && state.on)
-  var lines = ["Proxy (proxyctl): " + (on ? "on" : "off")]
+  var tun = !!(state && state.tun === "running")
+  var lines = ["Proxy (proxyctl): " + (on ? "on" : (tun ? "off (TUN on)" : "off"))]
   lines.push("Endpoint: " + String((state && (state.endpoint || state.configured)) || "\u2014"))
-  if (on) {
-    lines.push("Health: " + healthLine(true, !!(state && state.busy), state ? state.health : null,
-      !state || state.probeEnabled !== false))
-    lines.push("Exit IP: " + exitIpLine(true, !!(state && state.exitIpBusy), state ? state.exitIp : ""))
+  if (on || tun) {
+    lines.push("Health: " + healthLine(on, !!(state && state.busy), state ? state.health : null,
+      !state || state.probeEnabled !== false, tun))
+    lines.push("Exit IP: " + exitIpLine(on, !!(state && state.exitIpBusy), state ? state.exitIp : "", tun))
   }
   if (state && state.error) lines.push("Error: " + state.error)
   return lines.join("\n")
@@ -366,11 +406,12 @@ function statusSummary(state) {
 // what the mouse buttons do.
 function tooltipText(state) {
   var on = !!(state && state.on)
+  var tunRunning = !!(state && state.tun === "running")
   var endpoint = String((state && (state.endpoint || state.configured)) || "")
-  var parts = [on ? "Proxy on " + endpoint : "Proxy off"]
+  var parts = [on ? "Proxy on " + endpoint : (tunRunning ? "TUN on " + endpoint : "Proxy off")]
   if (state && state.error) parts.push(state.error)
-  if (state && state.tun === "running") parts.push("TUN on")
-  if (on) {
+  if (on && tunRunning) parts.push("TUN on")
+  if (on || tunRunning) {
     if (state.busy) {
       parts.push("checking\u2026")
     } else if (!state.health) {
@@ -411,6 +452,8 @@ if (typeof module !== "undefined") {
     cleanExitIp: cleanExitIp,
     toggleArgs: toggleArgs,
     tunArgs: tunArgs,
+    tunProbeArgs: tunProbeArgs,
+    tunExitIpArgs: tunExitIpArgs,
     statusArgs: statusArgs,
     toolsArgs: toolsArgs,
     parseStatus: parseStatus,

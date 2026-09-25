@@ -70,6 +70,10 @@ BarWidget {
   property var status: null
   property var tools: null
   property bool tunBusy: false
+  // The mihomo service needs a moment to come up, so a single refresh right
+  // after `proxyctl tun on` can still read "stopped" and leave the switch
+  // looking dead. These ticks re-read the status a few times until it settles.
+  property int tunSettleTicks: 0
 
   // Bar.summonBarWidget / hideBarWidget / isBarWidgetOpen look for exactly
   // these on the widget root.
@@ -87,7 +91,7 @@ BarWidget {
   readonly property color urgentColor: bar ? bar.urgent : Color.urgent
   readonly property color successColor: "#a3be8c"
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
-  readonly property string label: Model.barLabel(root.proxyOn, root.busy, root.health)
+  readonly property string label: Model.barLabel(root.proxyOn, root.busy, root.health, root.tunRunning)
   readonly property color stateColor: !root.proxyOn
     ? root.dimColor
     : (Model.healthFailed(root.health) ? root.urgentColor : root.foreground)
@@ -103,18 +107,26 @@ BarWidget {
   })
 
   // Panel strings.
-  readonly property string panelStateText: !root.proxyOn
-    ? "Off"
-    : (Model.healthFailed(root.health) ? "On \u00b7 failing" : (Model.healthOk(root.health) ? "On \u00b7 working" : "On"))
-  readonly property color panelStateColor: !root.proxyOn
-    ? root.dimColor
-    : (Model.healthFailed(root.health) ? root.urgentColor : root.successColor)
-  readonly property string healthText: Model.healthLine(root.proxyOn, root.busy, root.health, root.probeEnabled)
-  readonly property string exitIpText: Model.exitIpLine(root.proxyOn, root.exitIpBusy, root.exitIp)
-  readonly property color healthColor: !root.proxyOn
+  readonly property string panelStateText: root.tunRunning && !root.proxyOn
+    ? "On \u00b7 TUN"
+    : (!root.proxyOn
+      ? "Off"
+      : (Model.healthFailed(root.health) ? "On \u00b7 failing" : (Model.healthOk(root.health) ? "On \u00b7 working" : "On")))
+  readonly property color panelStateColor: root.tunRunning && !root.proxyOn
+    ? root.successColor
+    : (!root.proxyOn
+      ? root.dimColor
+      : (Model.healthFailed(root.health) ? root.urgentColor : root.successColor))
+  readonly property string healthText: Model.healthLine(root.proxyOn, root.busy, root.health, root.probeEnabled, root.tunRunning)
+  readonly property string exitIpText: Model.exitIpLine(root.proxyOn, root.exitIpBusy, root.exitIp, root.tunRunning)
+  readonly property color healthColor: !root.proxied
     ? root.dimColor
     : (Model.healthFailed(root.health) ? root.urgentColor : root.foreground)
   readonly property bool tunRunning: !!root.status && root.status.tun.service === "running"
+  // Either path counts as proxied: the per-app system proxy, or TUN at the
+  // network layer. Everything that asks "is this machine proxied" uses this.
+  readonly property bool proxied: root.proxyOn || root.tunRunning
+  readonly property bool tunPath: root.tunRunning && !root.proxyOn
   readonly property var layerRows: Model.layerRows(root.status, root.tools)
 
   implicitWidth: content.implicitWidth + Style.space(16)
@@ -132,8 +144,12 @@ BarWidget {
     root.proxyOn = state.on
     root.endpoint = state.endpoint
     if (!state.on) {
-      root.health = null
-      root.exitIp = ""
+      // TUN can still be carrying traffic, so only forget the measurements
+      // when nothing is proxying any more.
+      if (!root.tunRunning) {
+        root.health = null
+        root.exitIp = ""
+      }
       return
     }
     if (changed || root.health === null) {
@@ -197,19 +213,30 @@ BarWidget {
   }
 
   function checkNow() {
-    if (!root.proxyOn || root.busy || probeProc.running) return
-    if (!Model.isAddress(root.liveAddress)) return
-    probeProc.command = Model.probeArgs(root.liveAddress)
+    if (!root.proxied || root.busy || probeProc.running) return
+    if (root.tunPath) {
+      // No -x: the kernel routes this through mihomo, which is exactly the
+      // path a TUN user cares about.
+      probeProc.command = Model.tunProbeArgs()
+    } else {
+      if (!Model.isAddress(root.liveAddress)) return
+      probeProc.command = Model.probeArgs(root.liveAddress)
+    }
     probeProc.running = true
   }
 
   // Only asked for while the panel is open (or after a manual re-check): the
   // exit IP costs one more request through a proxy that may be slow.
   function checkExitIp() {
-    if (!root.proxyOn || root.exitIpBusy || ipProc.running) return
-    if (!Model.isAddress(root.liveAddress)) return
-    root.exitIpBusy = true
-    ipProc.command = Model.exitIpArgs(root.liveAddress)
+    if (!root.proxied || root.exitIpBusy || ipProc.running) return
+    if (root.tunPath) {
+      root.exitIpBusy = true
+      ipProc.command = Model.tunExitIpArgs()
+    } else {
+      if (!Model.isAddress(root.liveAddress)) return
+      root.exitIpBusy = true
+      ipProc.command = Model.exitIpArgs(root.liveAddress)
+    }
     ipProc.running = true
   }
 
@@ -234,7 +261,10 @@ BarWidget {
       root.lastError = "invalid address: " + (root.draftAddress === "" ? "(empty)" : root.draftAddress)
       return
     }
-    var args = Model.tunArgs(root.tunRunning, root.draftAddress, root.proxyctlPath)
+    // tunArgs takes the DESIRED state: the switch always asks for the opposite
+    // of what is running. Passing the current state here turned every click
+    // into "tun off" — the reason the switch looked dead.
+    var args = Model.tunArgs(!root.tunRunning, root.draftAddress, root.proxyctlPath)
     if (args.length === 0) {
       root.lastError = "cannot run proxyctl tun"
       return
@@ -409,6 +439,11 @@ BarWidget {
     id: tunProc
     command: []
     property string errText: ""
+    property string outText: ""
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: tunProc.outText = text
+    }
     stderr: StdioCollector {
       waitForEnd: true
       onStreamFinished: tunProc.errText = text
@@ -420,7 +455,30 @@ BarWidget {
         ? ""
         : ("proxyctl tun exit " + exitCode + (detail !== "" ? ": " + detail : ""))
       tunProc.errText = ""
+      root.tunSettleTicks = 4
       Qt.callLater(root.refreshStatus)
+    }
+  }
+
+  Timer {
+    interval: 1500
+    repeat: true
+    running: root.tunSettleTicks > 0
+    onTriggered: {
+      root.tunSettleTicks--
+      root.refreshStatus()
+    }
+  }
+
+  // TUN coming up or going down changes which path the probes must use, so
+  // re-measure as soon as the status says the service moved.
+  onTunRunningChanged: {
+    if (root.tunRunning) {
+      Qt.callLater(root.checkNow)
+      if (root.popupOpen) Qt.callLater(root.checkExitIp)
+    } else if (!root.proxyOn) {
+      root.health = null
+      root.exitIp = ""
     }
   }
 
@@ -433,8 +491,8 @@ BarWidget {
     triggeredOnStart: true
     onTriggered: {
       root.refresh()
-      if (root.proxyOn && root.probeEnabled && !root.busy) root.checkNow()
-      if (root.popupOpen && !root.busy) root.checkExitIp()
+      if (root.proxied && root.probeEnabled && !root.busy) root.checkNow()
+      if (root.popupOpen && root.proxied && !root.busy) root.checkExitIp()
       if (root.popupOpen) root.refreshStatus()
     }
   }
@@ -452,6 +510,10 @@ BarWidget {
 
     function check(): void {
       root.checkNow()
+    }
+
+    function tun(): void {
+      root.toggleTun()
     }
 
     // Quickshell refuses untyped IPC arguments ("QVariant cannot be used
@@ -586,7 +648,7 @@ BarWidget {
         label: "Exit IP"
         value: root.exitIpText
         labelColor: root.foreground
-        valueColor: root.proxyOn ? root.foreground : root.dimColor
+        valueColor: root.proxied ? root.foreground : root.dimColor
         fontFamily: root.fontFamily
       }
 
@@ -606,9 +668,11 @@ BarWidget {
       Toggle {
         width: panel.width
         label: "System proxy"
-        description: root.proxyOn
-          ? "Enabled \u2014 browsers, terminals, git and dev tools use " + root.liveAddress
-          : "Disabled \u2014 everything connects directly"
+        description: root.tunRunning
+          ? "Not needed while TUN is on \u2014 every app is already routed"
+          : (root.proxyOn
+            ? "Enabled \u2014 browsers, terminals, git and dev tools use " + root.liveAddress
+            : "Disabled \u2014 everything connects directly")
         checked: root.proxyOn
         foreground: root.foreground
         fontFamily: root.fontFamily

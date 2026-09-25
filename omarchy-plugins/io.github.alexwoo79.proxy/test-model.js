@@ -91,6 +91,8 @@ eq(M.toggleArgs(false, "10.0.0.5:7890", "").length, 0, "missing binary refuses t
 
 // --- display ---------------------------------------------------------------
 eq(M.barLabel(false, false, null), "off", "off label")
+eq(M.barLabel(false, false, null, true), "tun", "TUN is named when the per-app proxy is off")
+eq(M.barLabel(true, false, { ok: true, ms: 87 }, true), "on 87ms", "TUN does not override a proxied label")
 eq(M.barLabel(true, true, null), "\u2026", "busy label")
 eq(M.barLabel(true, false, null), "on", "on without a probe yet")
 eq(M.barLabel(true, false, { ok: true, ms: 87 }), "on 87ms", "latency label")
@@ -152,7 +154,10 @@ eq(M.cleanExitIp("1.2.3.4.5"), "", "a malformed ipv4 is rejected")
 eq(M.cleanExitIp("x".repeat(60)), "", "absurdly long bodies are rejected")
 
 // --- panel lines -----------------------------------------------------------
-eq(M.healthLine(false, false, null, true), "proxy is off", "panel health when off")
+eq(M.healthLine(false, false, null, true), "no proxy is running", "panel health when nothing is proxying")
+eq(M.healthLine(false, false, null, true, true), "not checked yet", "TUN alone counts as active")
+has(M.healthLine(false, false, { ok: true, ms: 620, at: 0 }, true, true), "via TUN", "TUN health names the path")
+eq(M.healthLine(false, false, { ok: true, ms: 620, at: 0 }, true, false), "no proxy is running", "TUN off falls back to nothing running")
 eq(M.healthLine(true, true, null, true), "checking\u2026", "panel health while probing")
 eq(M.healthLine(true, false, { ok: true, ms: 87, at: 0 }, false), "health check disabled in settings", "panel health with the probe off")
 eq(M.healthLine(true, false, null, true), "not checked yet", "panel health before the first probe")
@@ -160,6 +165,7 @@ has(M.healthLine(true, false, { ok: true, ms: 87, at: 0 }, true), "87ms", "panel
 has(M.healthLine(true, false, { ok: false, ms: -1, error: "timed out", at: 0 }, true), "failed: timed out", "panel health shows the failure")
 
 eq(M.exitIpLine(false, false, ""), "\u2014", "no exit ip while off")
+eq(M.exitIpLine(false, false, "155.117.84.156", true), "155.117.84.156", "TUN alone still reports an exit ip")
 eq(M.exitIpLine(true, true, ""), "checking\u2026", "exit ip while probing")
 eq(M.exitIpLine(true, false, "155.117.84.152"), "155.117.84.152", "exit ip is shown")
 eq(M.exitIpLine(true, false, ""), "\u2014", "exit ip placeholder when unknown")
@@ -277,6 +283,34 @@ eq(rows[2].value, "10.10.10.111:7890", "browser row shows the endpoint")
 eq(rows[4].value, "4/6 configured", "dev tools row counts")
 eq(rows[5].ok, false, "TUN row reflects the stopped service")
 eq(M.layerRows(null, tools).length, 0, "no rows without a status")
-eq(M.layerRows(parsedDirect, null).length, 5, "tools row is skipped when unknown")
+eq(M.layerRows(parsedOn, null).length, 5, "tools row is skipped when unknown")
+
+// With TUN running the per-app layers stop mattering, so the section shrinks.
+const tunRows = M.layerRows(parsedDirect, tools)
+eq(tunRows.length, 2, "TUN collapses the layer list")
+eq(tunRows[0].value, "running (Meta)", "the TUN row keeps the interface")
+eq(tunRows[1].label, "Per-app layers", "one line explains why the rest is gone")
+eq(tunRows[1].ok, false, "the explanation is informational, not a pass")
+
+// --- TUN-aware probes -------------------------------------------------------
+const tunProbe = M.tunProbeArgs()
+eq(tunProbe[0], "curl", "TUN probe runs curl")
+ok(tunProbe.indexOf("-x") < 0, "TUN probe names no proxy: the kernel routes it")
+eq(tunProbe[tunProbe.indexOf("--noproxy") + 1], "*", "TUN probe ignores inherited proxy variables")
+eq(tunProbe[tunProbe.length - 1], M.PROBE_URL, "TUN probe target")
+ok(M.tunExitIpArgs().indexOf("-x") < 0, "TUN exit-ip probe names no proxy")
+eq(M.tunExitIpArgs()[M.tunExitIpArgs().length - 1], M.PROBE_EXIT_IP_URL, "TUN exit-ip target")
+
+const tunSummary = M.statusSummary({
+  on: false, configured: "10.10.10.111:7890", tun: "running",
+  health: { ok: true, ms: 620, at: 0 }, exitIp: "155.117.84.156", probeEnabled: true
+})
+has(tunSummary, "off (TUN on)", "summary says TUN is carrying traffic")
+has(tunSummary, "via TUN", "summary health names the path")
+has(tunSummary, "Exit IP: 155.117.84.156", "summary keeps the exit ip under TUN")
+
+const tunTip = M.tooltipText({ on: false, configured: "10.10.10.111:7890", tun: "running", health: null, probeEnabled: true })
+has(tunTip, "TUN on 10.10.10.111:7890", "tooltip leads with TUN when the per-app proxy is off")
+ok(!tunTip.includes("Proxy off"), "tooltip does not claim the machine is direct while TUN runs")
 
 console.log("Model.js: all assertions passed")

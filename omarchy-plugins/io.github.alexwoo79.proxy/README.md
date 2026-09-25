@@ -38,6 +38,20 @@ Layers
   [ Check ]                      [ Copy ]
 ```
 
+With TUN running the picture changes — the probes go through the tunnel
+(`via TUN · 608ms`) and the layer list collapses, because TUN owns the network
+layer and the per-app rows would just be noise:
+
+```
+Health        via TUN · 608ms (checked 21:41:21)
+Exit IP       155.117.84.156
+System proxy  Not needed while TUN is on — every app is already routed
+TUN mode      Running — every app routed at the network layer
+Layers
+  TUN            running (Meta)
+  Per-app layers not used while TUN is on
+```
+
 | Control | Action |
 |---|---|
 | **Endpoint** field | Type `host:port`; Enter applies it (and re-points a running proxy) and saves it |
@@ -49,6 +63,8 @@ Layers
 The **Layers** rows come from `proxyctl status` (and `proxyctl tools list` for
 the dev-tool count), so a half-applied state — for example a browser that never
 got its `--proxy-server` flag — is visible without reading the report by hand.
+While TUN is running only the TUN row remains: the other layers are not in the
+path any more.
 
 `Endpoint` is saved into this widget's entry in
 `~/.config/omarchy/shell.json` through Omarchy's `updateEntryInline`, so the
@@ -61,6 +77,10 @@ the endpoint above, which makes the per-tool configs unnecessary. It needs
 `~/.local/bin/mihomo` (proxyctl generates and validates the config), and
 pointing it at a dead upstream cuts the machine off — verify the endpoint
 first, and `proxyctl tun off` (the switch) is the escape hatch.
+
+It works with or without the per-app system proxy: with that switch off, the
+panel's health and exit IP are measured straight through the tunnel, and the
+bar label reads `tun` instead of `off`.
 
 Hovering the bar widget shows the endpoint, the measured latency and when it
 was last checked, plus `TUN on` while TUN is running. Outside-click, `Esc`
