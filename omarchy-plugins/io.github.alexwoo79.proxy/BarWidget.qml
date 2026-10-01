@@ -300,6 +300,15 @@ BarWidget {
     root.copied = false
     root.copyError = ""
     endpointField.text = root.liveAddress
+    // KeyboardPanel focuses its focusTarget once the card has mapped; this
+    // queued call lands after that one, so the field holds the keys from the
+    // first open onwards. selectAll lets a new address be typed straight over
+    // the old one.
+    Qt.callLater(function() {
+      if (!root.popupOpen) return
+      endpointField.forceActiveFocus()
+      endpointField.selectAll()
+    })
     root.checkExitIp()
     root.checkNow()
     root.refreshStatus()
@@ -535,218 +544,249 @@ BarWidget {
     }
   }
 
-  // The details panel. PopupCard anchors it under the bar, owns outside-click
-  // dismissal and the popout slot, and routes owner.close() back here.
-  PopupCard {
+  // The details panel. KeyboardPanel rather than PopupCard: PopupCard is an
+  // xdg-popup, and an xdg-popup only receives keys once a click or a hover has
+  // already routed focus through its parent surface. The bar is a layer
+  // surface with no keyboard focus of its own, so that never happened here and
+  // the endpoint field was visible but untypeable. KeyboardPanel is a real
+  // layer-shell surface with the brief Wayland Exclusive→OnDemand focus prime
+  // every first-party panel that needs typing relies on (the network panel's
+  // passphrase prompt, the clock's birth year). It anchors the card under the
+  // bar, owns outside-click dismissal and the popout slot, and routes
+  // owner.close() back here.
+  KeyboardPanel {
     id: popup
     anchorItem: root
     bar: root.bar
     owner: root
     open: root.popupOpen
+    // Typing the endpoint is the one thing this panel is for, so the field
+    // takes focus as soon as the card maps.
+    focusTarget: endpointField
     contentWidth: popup.fittedContentWidth(Style.space(330))
     contentHeight: popup.fittedContentHeight(panel.implicitHeight)
 
-    Column {
-      id: panel
+    PanelKeyCatcher {
+      id: panelKeys
       anchors.fill: parent
-      spacing: Style.space(10)
+      // While the field owns the keys the catcher steps aside, so typing,
+      // selecting and Enter reach it; otherwise Escape closes the panel and
+      // Tab hands over to the neighbouring bar panel.
+      blocked: endpointField.activeFocus
 
-      // Header: glyph, title, state on the right.
-      Item {
-        width: panel.width
-        height: Math.max(headerGlyph.implicitHeight, headerTitle.implicitHeight, headerState.implicitHeight)
-
-        Text {
-          id: headerGlyph
-          anchors.left: parent.left
-          anchors.verticalCenter: parent.verticalCenter
-          text: Model.GLYPH
-          color: root.stateColor
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.iconLarge
-        }
-
-        Text {
-          id: headerTitle
-          anchors.left: headerGlyph.right
-          anchors.leftMargin: Style.space(6)
-          anchors.verticalCenter: parent.verticalCenter
-          text: "Proxy"
-          color: root.foreground
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.title
-          font.bold: true
-        }
-
-        Text {
-          id: headerState
-          anchors.right: parent.right
-          anchors.verticalCenter: parent.verticalCenter
-          text: root.panelStateText
-          color: root.panelStateColor
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.body
-        }
+      onCloseRequested: root.close()
+      onTabRequested: function(direction) {
+        if (root.bar && typeof root.bar.switchPanelFrom === "function") root.bar.switchPanelFrom(root, direction)
       }
 
-      PanelSeparator { foreground: root.foreground }
+      Column {
+        id: panel
+        anchors.fill: parent
+        spacing: Style.space(10)
 
-      // The endpoint is the one thing the user edits here: type host:port,
-      // press Enter to apply it (and re-apply it to a running proxy), or just
-      // flip the switch below to enable/disable with this address.
-      Row {
-        width: panel.width
-        spacing: Style.space(8)
-
-        Text {
-          id: endpointLabel
-          anchors.verticalCenter: parent.verticalCenter
-          width: Style.space(78)
-          text: "Endpoint"
-          color: Qt.darker(root.foreground, 1.6)
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.body
-          textFormat: Text.PlainText
-        }
-
-        TextField {
-          id: endpointField
-          width: panel.width - endpointLabel.width - Style.space(8)
-          placeholderText: "host:port"
-          foreground: root.draftValid ? root.foreground : root.urgentColor
-          font.family: root.fontFamily
-          // Enter applies; losing focus does not, so clicking around the panel
-          // can never re-point a running proxy by accident.
-          onAccepted: root.applyAddress(text)
-        }
-      }
-
-      Text {
-        width: panel.width
-        visible: !root.draftValid || root.draftPending
-        text: !root.draftValid
-          ? "Enter an address as host:port \u2014 the switch enables it"
-          : "Press Enter to apply " + root.draftAddress + " to the running proxy"
-        color: !root.draftValid ? root.urgentColor : root.dimColor
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.caption
-        textFormat: Text.PlainText
-        wrapMode: Text.Wrap
-      }
-
-      InfoRow {
-        width: panel.width
-        label: "Health"
-        value: root.healthText
-        labelColor: root.foreground
-        valueColor: root.healthColor
-        fontFamily: root.fontFamily
-      }
-
-      InfoRow {
-        width: panel.width
-        label: "Exit IP"
-        value: root.exitIpText
-        labelColor: root.foreground
-        valueColor: root.proxied ? root.foreground : root.dimColor
-        fontFamily: root.fontFamily
-      }
-
-      InfoRow {
-        width: panel.width
-        visible: root.lastError !== ""
-        label: "Error"
-        value: root.lastError
-        labelColor: root.foreground
-        valueColor: root.urgentColor
-        fontFamily: root.fontFamily
-      }
-
-      PanelSeparator { foreground: root.foreground }
-
-      // The one control that changes system state, and it lives in the panel.
-      Toggle {
-        width: panel.width
-        label: "System proxy"
-        description: root.tunRunning
-          ? "Not needed while TUN is on \u2014 every app is already routed"
-          : (root.proxyOn
-            ? "Enabled \u2014 browsers, terminals, git and dev tools use " + root.liveAddress
-            : "Disabled \u2014 everything connects directly")
-        checked: root.proxyOn
-        foreground: root.foreground
-        fontFamily: root.fontFamily
-        opacity: root.busy ? 0.55 : 1.0
-        onClicked: root.toggle()
-      }
-
-      // TUN mode: the skill's network-layer switch. It routes every app
-      // through the local mihomo using the endpoint above, so a wrong or dead
-      // upstream cuts the machine off — hence the explicit wording.
-      Toggle {
-        width: panel.width
-        label: "TUN mode"
-        description: root.tunRunning
-          ? "Running \u2014 every app routed at the network layer"
-          : "Stopped \u2014 verify the endpoint before enabling"
-        checked: root.tunRunning
-        foreground: root.foreground
-        fontFamily: root.fontFamily
-        opacity: root.tunBusy ? 0.55 : 1.0
-        onClicked: root.toggleTun()
-      }
-
-      PanelSeparator { foreground: root.foreground }
-
-      PanelSectionHeader {
-        text: "Layers"
-        foreground: root.foreground
-        fontFamily: root.fontFamily
-      }
-
-      Repeater {
-        model: root.layerRows
-
-        InfoRow {
+        // Header: glyph, title, state on the right.
+        Item {
           width: panel.width
-          labelWidth: Style.space(104)
-          label: modelData.label
-          value: modelData.value
-          labelColor: root.foreground
-          valueColor: modelData.ok ? root.foreground : root.dimColor
-          fontFamily: root.fontFamily
-        }
-      }
+          height: Math.max(headerGlyph.implicitHeight, headerTitle.implicitHeight, headerState.implicitHeight)
 
-      PanelSeparator { foreground: root.foreground }
+          Text {
+            id: headerGlyph
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            text: Model.GLYPH
+            color: root.stateColor
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.iconLarge
+          }
 
-      Row {
-        width: panel.width
-        spacing: Style.space(8)
+          Text {
+            id: headerTitle
+            anchors.left: headerGlyph.right
+            anchors.leftMargin: Style.space(6)
+            anchors.verticalCenter: parent.verticalCenter
+            text: "Proxy"
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.title
+            font.bold: true
+          }
 
-        Button {
-          width: (panel.width - Style.space(8)) / 2
-          text: "Check"
-          iconText: "\uf021"
-          tooltipText: "Re-run the health and exit-IP probes"
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          focusable: true
-          onClicked: {
-            root.checkNow()
-            root.checkExitIp()
+          Text {
+            id: headerState
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            text: root.panelStateText
+            color: root.panelStateColor
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
           }
         }
 
-        Button {
-          width: (panel.width - Style.space(8)) / 2
-          text: root.copied ? "Copied \u2713" : (root.copyError !== "" ? "Failed" : "Copy")
-          iconText: "\uf0c5"
-          tooltipText: "Copy a status block to the clipboard"
+        PanelSeparator { foreground: root.foreground }
+
+        // The endpoint is the one thing the user edits here: type host:port,
+        // press Enter to apply it (and re-apply it to a running proxy), or just
+        // flip the switch below to enable/disable with this address.
+        Row {
+          width: panel.width
+          spacing: Style.space(8)
+
+          Text {
+            id: endpointLabel
+            anchors.verticalCenter: parent.verticalCenter
+            width: Style.space(78)
+            text: "Endpoint"
+            color: Qt.darker(root.foreground, 1.6)
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+            textFormat: Text.PlainText
+          }
+
+          TextField {
+            id: endpointField
+            width: panel.width - endpointLabel.width - Style.space(8)
+            // Focus comes from the panel's focusTarget when the card maps; the
+            // field only has to handle the keys it owns.
+            selectByMouse: true
+            placeholderText: "host:port"
+            foreground: root.draftValid ? root.foreground : root.urgentColor
+            font.family: root.fontFamily
+            // Enter applies; losing focus does not, so clicking around the panel
+            // can never re-point a running proxy by accident.
+            onAccepted: root.applyAddress(text)
+            // Escape drops the draft: the proxy keeps running against the
+            // address it was given, and the field is re-seeded on the next open.
+            Keys.onEscapePressed: root.close()
+          }
+        }
+
+        Text {
+          width: panel.width
+          visible: !root.draftValid || root.draftPending
+          text: !root.draftValid
+            ? "Enter an address as host:port \u2014 the switch enables it"
+            : "Press Enter to apply " + root.draftAddress + " to the running proxy"
+          color: !root.draftValid ? root.urgentColor : root.dimColor
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          textFormat: Text.PlainText
+          wrapMode: Text.Wrap
+        }
+
+        InfoRow {
+          width: panel.width
+          label: "Health"
+          value: root.healthText
+          labelColor: root.foreground
+          valueColor: root.healthColor
+          fontFamily: root.fontFamily
+        }
+
+        InfoRow {
+          width: panel.width
+          label: "Exit IP"
+          value: root.exitIpText
+          labelColor: root.foreground
+          valueColor: root.proxied ? root.foreground : root.dimColor
+          fontFamily: root.fontFamily
+        }
+
+        InfoRow {
+          width: panel.width
+          visible: root.lastError !== ""
+          label: "Error"
+          value: root.lastError
+          labelColor: root.foreground
+          valueColor: root.urgentColor
+          fontFamily: root.fontFamily
+        }
+
+        PanelSeparator { foreground: root.foreground }
+
+        // The one control that changes system state, and it lives in the panel.
+        Toggle {
+          width: panel.width
+          label: "System proxy"
+          description: root.tunRunning
+            ? "Not needed while TUN is on \u2014 every app is already routed"
+            : (root.proxyOn
+              ? "Enabled \u2014 browsers, terminals, git and dev tools use " + root.liveAddress
+              : "Disabled \u2014 everything connects directly")
+          checked: root.proxyOn
           foreground: root.foreground
           fontFamily: root.fontFamily
-          focusable: true
-          onClicked: root.copyStatus()
+          opacity: root.busy ? 0.55 : 1.0
+          onClicked: root.toggle()
+        }
+
+        // TUN mode: the skill's network-layer switch. It routes every app
+        // through the local mihomo using the endpoint above, so a wrong or dead
+        // upstream cuts the machine off — hence the explicit wording.
+        Toggle {
+          width: panel.width
+          label: "TUN mode"
+          description: root.tunRunning
+            ? "Running \u2014 every app routed at the network layer"
+            : "Stopped \u2014 verify the endpoint before enabling"
+          checked: root.tunRunning
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          opacity: root.tunBusy ? 0.55 : 1.0
+          onClicked: root.toggleTun()
+        }
+
+        PanelSeparator { foreground: root.foreground }
+
+        PanelSectionHeader {
+          text: "Layers"
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+        }
+
+        Repeater {
+          model: root.layerRows
+
+          InfoRow {
+            width: panel.width
+            labelWidth: Style.space(104)
+            label: modelData.label
+            value: modelData.value
+            labelColor: root.foreground
+            valueColor: modelData.ok ? root.foreground : root.dimColor
+            fontFamily: root.fontFamily
+          }
+        }
+
+        PanelSeparator { foreground: root.foreground }
+
+        Row {
+          width: panel.width
+          spacing: Style.space(8)
+
+          Button {
+            width: (panel.width - Style.space(8)) / 2
+            text: "Check"
+            iconText: "\uf021"
+            tooltipText: "Re-run the health and exit-IP probes"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            focusable: true
+            onClicked: {
+              root.checkNow()
+              root.checkExitIp()
+            }
+          }
+
+          Button {
+            width: (panel.width - Style.space(8)) / 2
+            text: root.copied ? "Copied \u2713" : (root.copyError !== "" ? "Failed" : "Copy")
+            iconText: "\uf0c5"
+            tooltipText: "Copy a status block to the clipboard"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            focusable: true
+            onClicked: root.copyStatus()
+          }
         }
       }
     }

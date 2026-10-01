@@ -54,7 +54,7 @@ Layers
 
 | Control | Action |
 |---|---|
-| **Endpoint** field | Type `host:port`; Enter applies it (and re-points a running proxy) and saves it |
+| **Endpoint** field | Focused when the panel opens; type `host:port`; Enter applies it (and re-points a running proxy) and saves it |
 | **System proxy** switch | `proxyctl on --address <configured>` or `proxyctl off` |
 | **TUN mode** switch | `proxyctl tun on --address <endpoint>` / `proxyctl tun off` |
 | Check | Re-run the health and exit-IP probes |
@@ -83,8 +83,10 @@ panel's health and exit IP are measured straight through the tunnel, and the
 bar label reads `tun` instead of `off`.
 
 Hovering the bar widget shows the endpoint, the measured latency and when it
-was last checked, plus `TUN on` while TUN is running. Outside-click, `Esc`
-(via the popout grab) or a second click on the widget closes the panel.
+was last checked, plus `TUN on` while TUN is running. The panel is a keyboard
+panel — it takes the keys while it is open, so the endpoint can be typed
+straight away — and a click outside, `Esc`, or a second click on the widget
+closes it.
 
 The widget never opens a window of its own. Omarchy's presentation terminal
 (`omarchy-launch-floating-terminal-with-presentation`) holds itself open until
