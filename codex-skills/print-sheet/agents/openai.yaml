@@ -1,0 +1,4 @@
+interface:
+  display_name: "Print Sheet"
+  short_description: "把代码/Markdown 排成可打印可预览的 A4 稿"
+  default_prompt: "用 $print-sheet 把这些文件排成可打印的 A4 稿并生成 PDF 预览"
