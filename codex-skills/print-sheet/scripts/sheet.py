@@ -10,6 +10,8 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import html
+import json
+import os
 import re
 import shutil
 import subprocess
@@ -23,8 +25,26 @@ DEFAULT_FONT = (
     '"Noto Sans Mono CJK SC", "Noto Sans Mono CJK TC", "JetBrainsMono Nerd Font", '
     '"DejaVu Sans Mono", monospace'
 )
+MAC_FONT = '"SF Mono", Menlo, "PingFang SC", "Songti SC", monospace'
 CHROMIUM_BINS = ("chromium", "chromium-browser", "google-chrome-stable", "google-chrome")
+# macOS: Chrome/Chromium/Edge/Brave live in app bundles, never on PATH.
+CHROMIUM_APP_BINS = (
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+    "/Applications/Vivaldi.app/Contents/MacOS/Vivaldi",
+)
 PAPERS = ("A4", "A3", "A5", "Letter", "Legal")
+PAPER_PT = {
+    "A3": (841.89, 1190.55),
+    "A4": (595.276, 841.89),
+    "A5": (419.53, 595.28),
+    "Legal": (612.0, 1008.0),
+    "Letter": (612.0, 792.0),
+}
+CSS_UNITS = {"mm": 72 / 25.4, "cm": 72 / 2.54, "in": 72.0, "pt": 1.0, "px": 0.75}
+SCRIPTS_DIR = Path(__file__).resolve().parent
 
 CSS = Template(
     """
@@ -69,6 +89,19 @@ td.num {
 td.line { padding-left: 2.5mm !important; }
 td.line .ln { white-space: pre-wrap; overflow-wrap: anywhere; padding-left: 4mm; text-indent: -4mm; }
 pre.plain { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; font-family: $font; font-size: ${code_pt}pt; }
+
+/* 代码注释：汉字用楷体，西文用斜体（注释标记跟着一起变） */
+.cmt {
+  font-family: "Kaiti SC", "STKaiti", "KaiTi", "Kaiti TC", "Songti SC",
+               "Noto Serif CJK SC", "Noto Sans CJK SC", serif;
+}
+/* 西文注释走轻量斜体：Helvetica Neue Light Italic（比等宽斜体瘦），
+   取不到时依次退到 Avenir Next、代码等宽字体、系统无衬线 */
+.cmt i {
+  font-family: "Helvetica Neue", "Avenir Next", $font, sans-serif;
+  font-style: italic;
+  font-weight: 300;
+}
 
 /* Markdown 正文 */
 .md-body { font-size: ${prose_pt}pt; line-height: 1.6; }
@@ -115,6 +148,23 @@ pre.plain { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; font-fami
 .md-body a { color: #000; }
 .md-body hr { border: none; border-top: .5pt solid #999; margin: 3mm 0; }
 .md-body input[type=checkbox] { margin-right: 1mm; }
+
+/* 屏幕预览：一张白纸 + 与打印一致的边距（@page 只在打印时生效） */
+@media screen {
+  html, body { background: #e9e9e9; }
+  body { padding: 10mm 0; }
+  .page {
+    width: ${content_w}pt;
+    margin: 0 auto;
+    padding: ${pad_top}pt ${pad_right}pt ${pad_bottom}pt ${pad_left}pt;
+    background: #fff;
+    box-shadow: 0 .3mm 1.2mm rgba(0, 0, 0, .3);
+  }
+}
+@media print {
+  html, body { background: #fff; padding: 0; }
+  .page { width: auto; margin: 0; padding: 0; background: #fff; box-shadow: none; }
+}
 """
 )
 
@@ -294,18 +344,236 @@ def render_markdown(path: Path | None, text: str, mode: str) -> str:
 # ---------------------------------------------------------------- HTML 组装
 
 
-def code_section(label: str, text: str, line_numbers: bool) -> str:
-    rows = []
+# ---------------------------------------------------------------- 注释着色
+
+# 注释里的汉字走楷体、西文走斜体：先按语言/扩展名认出注释，再按脚本切段。
+CJK_RE = re.compile(
+    r"[\u2e80-\u9fff\u3000-\u303f\u3040-\u30ff\uac00-\ud7af\uff00-\uffef]+"
+)
+
+# line: [(行注释标记, 是否只认行首)]；block: [(开始, 结束)]；strings: 字符串定界符
+COMMENT_PROFILES: dict[str, dict] = {
+    "none": {"line": [], "block": [], "strings": []},
+    "c": {
+        "line": [("//", False)],
+        "block": [("/*", "*/")],
+        "strings": ['"', "'"],
+    },
+    "hash": {"line": [("#", False)], "block": [], "strings": ['"', "'", "`"]},
+    "sql": {
+        "line": [("--", False)],
+        "block": [("/*", "*/")],
+        "strings": ["'", '"'],
+    },
+    "lua": {
+        "line": [("--", False)],
+        "block": [("--[[", "]]")],
+        "strings": ["'", '"'],
+    },
+    "html": {"line": [], "block": [("<!--", "-->")], "strings": []},
+    "asm": {"line": [(";", False)], "block": [], "strings": ['"', "'"]},
+    "lisp": {"line": [(";", False)], "block": [], "strings": ['"']},
+    "tex": {"line": [("%", False)], "block": [], "strings": []},
+    "vim": {"line": [('"', False)], "block": [], "strings": []},
+    "generic": {
+        "line": [("//", False), ("#", True)],
+        "block": [("/*", "*/")],
+        "strings": ['"', "'"],
+    },
+}
+
+EXT_PROFILE = {
+    **{
+        ext: "c"
+        for ext in (
+            "c", "h", "cc", "cpp", "cxx", "hh", "hpp", "hxx", "m", "mm", "java",
+            "js", "mjs", "cjs", "jsx", "ts", "tsx", "go", "rs", "cs", "swift",
+            "kt", "kts", "scala", "dart", "php", "css", "scss", "sass", "less",
+            "glsl", "vert", "frag", "metal", "qml", "proto", "groovy", "zig",
+        )
+    },
+    **{
+        ext: "hash"
+        for ext in (
+            "sh", "bash", "zsh", "ksh", "fish", "py", "pyi", "rb", "pl", "pm",
+            "r", "yaml", "yml", "toml", "ini", "cfg", "conf", "cmake", "mk",
+            "tf", "tfvars", "ps1", "psm1", "awk", "env", "properties",
+            "jl", "ex", "exs", "nix", "hcl",
+        )
+    },
+    **{
+        ext: "sql" for ext in ("sql", "hs", "elm")
+    },
+    **{"lua": "lua"},
+    **{
+        ext: "html"
+        for ext in ("html", "htm", "xml", "svg", "xsl", "plist", "vue", "svelte")
+    },
+    **{ext: "asm" for ext in ("s", "asm", "inc")},
+    **{ext: "tex" for ext in ("tex", "sty", "cls")},
+    **{
+        ext: "lisp"
+        for ext in ("lisp", "lsp", "scm", "clj", "cljs", "rkt", "el")
+    },
+    **{"vim": "vim"},
+    **{
+        ext: "none"
+        for ext in ("txt", "log", "csv", "tsv", "json", "rst", "org", "adoc")
+    },
+}
+
+NAME_PROFILE = {
+    "cmakelists.txt": "hash",
+    "makefile": "hash",
+    "gnumakefile": "hash",
+    "dockerfile": "hash",
+    "vagrantfile": "hash",
+    "gemfile": "hash",
+    "rakefile": "hash",
+    "brewfile": "hash",
+    ".gitignore": "hash",
+    ".gitattributes": "hash",
+    ".dockerignore": "hash",
+    ".bashrc": "hash",
+    ".zshrc": "hash",
+    ".profile": "hash",
+    ".env": "hash",
+}
+
+
+def profile_for(label: str | None) -> dict:
+    name = (label or "").rsplit("/", 1)[-1]
+    key = name.lower()
+    kind = NAME_PROFILE.get(key)
+    if kind is None and "." in key:
+        kind = EXT_PROFILE.get(key.rsplit(".", 1)[-1])
+    if kind is None:
+        kind = "generic" if name else "none"
+    return COMMENT_PROFILES[kind]
+
+
+def comment_segments(
+    line: str, state: dict, profile: dict
+) -> list[tuple[bool, str]]:
+    """按注释/非注释切分一行；块注释与字符串状态靠 state 跨行保持。"""
+    parts: list[tuple[bool, str]] = []
+    index = 0
+    length = len(line)
+    while index < length:
+        if state.get("block"):
+            close = line.find(state["block"], index)
+            if close < 0:
+                parts.append((True, line[index:]))
+                index = length
+            else:
+                width = len(state["block"])
+                parts.append((True, line[index:close + width]))
+                index = close + width
+                state["block"] = None
+            continue
+        if state.get("quote"):
+            quote = state["quote"]
+            cursor = index
+            while cursor < length:
+                if line[cursor] == "\\" and cursor + 1 < length:
+                    cursor += 2
+                    continue
+                if line[cursor] == quote:
+                    break
+                cursor += 1
+            if cursor >= length:
+                parts.append((False, line[index:]))
+                index = length
+            else:
+                parts.append((False, line[index:cursor + 1]))
+                index = cursor + 1
+                state["quote"] = None
+            continue
+
+        matched = False
+        for marker, line_start_only in profile["line"]:
+            if line.startswith(marker, index) and (
+                not line_start_only or not line[:index].strip()
+            ):
+                parts.append((True, line[index:]))
+                index = length
+                matched = True
+                break
+        if matched:
+            continue
+        for start, end in profile["block"]:
+            if line.startswith(start, index):
+                close = line.find(end, index + len(start))
+                if close < 0:
+                    parts.append((True, line[index:]))
+                    state["block"] = end
+                    index = length
+                else:
+                    parts.append((True, line[index:close + len(end)]))
+                    index = close + len(end)
+                matched = True
+                break
+        if matched:
+            continue
+
+        char = line[index]
+        if char in profile["strings"]:
+            parts.append((False, char))
+            state["quote"] = char
+            index += 1
+            continue
+        parts.append((False, char))
+        index += 1
+    return parts
+
+
+def style_comment_text(text: str) -> str:
+    """注释正文：汉字段留给 .cmt（楷体），其余段包成 <i>（斜体）。"""
+    chunks: list[str] = []
+    cursor = 0
+    for match in CJK_RE.finditer(text):
+        if match.start() > cursor:
+            chunks.append("<i>{}</i>".format(html.escape(text[cursor:match.start()])))
+        chunks.append(html.escape(match.group()))
+        cursor = match.end()
+    if cursor < len(text):
+        chunks.append("<i>{}</i>".format(html.escape(text[cursor:])))
+    return "".join(chunks)
+
+
+def render_code_line(line: str, state: dict, profile: dict, style_comments: bool) -> str:
+    if not style_comments or not (profile["line"] or profile["block"]):
+        return html.escape(line)
+    chunks: list[str] = []
+    for is_comment, text in comment_segments(line, state, profile):
+        if is_comment:
+            chunks.append('<span class="cmt">{}</span>'.format(style_comment_text(text)))
+        else:
+            chunks.append(html.escape(text))
+    return "".join(chunks)
+
+
+def code_section(
+    label: str, text: str, line_numbers: bool, style_comments: bool = True
+) -> str:
     lines = text.splitlines()
-    for number, line in enumerate(lines, start=1):
-        cell = html.escape(line) or "&nbsp;"
-        prefix = '<td class="num">{}</td>'.format(number) if line_numbers else ""
-        rows.append('<tr>{}<td class="line"><div class="ln">{}</div></td></tr>'.format(prefix, cell))
-    body = (
-        '<table class="code">{}</table>'.format("".join(rows))
-        if line_numbers
-        else '<pre class="plain">{}</pre>'.format(html.escape(text))
-    )
+    profile = profile_for(label)
+    state: dict[str, str | None] = {"block": None, "quote": None}
+    rendered = [
+        render_code_line(line, state, profile, style_comments) for line in lines
+    ]
+    if line_numbers:
+        rows = []
+        for number, cell in enumerate(rendered, start=1):
+            rows.append(
+                '<tr><td class="num">{}</td>'
+                '<td class="line"><div class="ln">{}</div></td></tr>'.format(
+                    number, cell or "&nbsp;"
+                )
+            )
+        body = '<table class="code">{}</table>'.format("".join(rows))
+    else:
+        body = '<pre class="plain">{}</pre>'.format("\n".join(rendered))
     head = (
         '<div class="file-head"><span class="name">{}</span>'
         '<span class="sub">{} 行</span></div>'.format(html.escape(label), len(lines))
@@ -323,11 +591,21 @@ def markdown_section(label: str, rendered: str) -> str:
 
 def build_html(sources: list[tuple[str, Path | None, str, bool]], opts) -> str:
     code_pt = opts.font_size
+    paper_w, paper_h = PAPER_PT[opts.paper]
+    if opts.landscape:
+        paper_w, paper_h = paper_h, paper_w
+    pad_top, pad_right, pad_bottom, pad_left = parse_margin(opts.margin)
+    content_w = max(paper_w - pad_left - pad_right, 72.0)
     values = dict(
         paper=opts.paper,
         orientation="landscape" if opts.landscape else "portrait",
         margin=opts.margin,
         font=opts.font,
+        content_w="{:.2f}".format(content_w),
+        pad_top="{:.2f}".format(pad_top),
+        pad_right="{:.2f}".format(pad_right),
+        pad_bottom="{:.2f}".format(pad_bottom),
+        pad_left="{:.2f}".format(pad_left),
         code_pt=code_pt,
         prose_pt=code_pt + 2.0,
         num_pt=code_pt - 0.6,
@@ -342,7 +620,14 @@ def build_html(sources: list[tuple[str, Path | None, str, bool]], opts) -> str:
         if is_markdown:
             sections.append(markdown_section(label, render_markdown(path, text, opts.md_renderer)))
         else:
-            sections.append(code_section(label, text, not opts.no_line_numbers))
+            sections.append(
+                code_section(
+                    label,
+                    text,
+                    not opts.no_line_numbers,
+                    not opts.no_comment_style,
+                )
+            )
     total_lines = sum(len(text.splitlines()) for _, _, text, _ in sources)
     meta = "{} 个文件 · {} 行 · 生成于 {} · 行号对应源文件实际行号".format(
         len(sources), total_lines, dt.datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -350,8 +635,9 @@ def build_html(sources: list[tuple[str, Path | None, str, bool]], opts) -> str:
     return (
         "<!DOCTYPE html>\n<html lang='zh-CN'><head><meta charset='utf-8'>\n"
         "<title>{}</title>\n<style>{}</style></head><body>\n"
+        "<div class='page'>\n"
         "<header class='doc-head'><h1>{}</h1><div class='meta'>{}</div></header>\n"
-        "{}\n</body></html>\n"
+        "{}\n</div>\n</body></html>\n"
     ).format(
         html.escape(opts.title),
         CSS.substitute(values),
@@ -364,18 +650,162 @@ def build_html(sources: list[tuple[str, Path | None, str, bool]], opts) -> str:
 # ---------------------------------------------------------------- 渲染/预览
 
 
-def render_pdf(html_path: Path, pdf_path: Path, renderer: str, timeout: int) -> str:
-    attempts: list[tuple[str, list[str]]] = []
+def parse_margin(text: str) -> tuple[float, float, float, float]:
+    """CSS margin shorthand -> (top, right, bottom, left) in points."""
+    values: list[float] = []
+    for token in text.replace(",", " ").split():
+        match = re.match(r"^([0-9]*\.?[0-9]+)(mm|cm|in|pt|px)?$", token.strip())
+        if not match:
+            continue
+        unit = match.group(2) or "px"
+        values.append(float(match.group(1)) * CSS_UNITS[unit])
+    if not values:
+        return (0.0, 0.0, 0.0, 0.0)
+    if len(values) == 1:
+        return (values[0], values[0], values[0], values[0])
+    if len(values) == 2:
+        return (values[0], values[1], values[0], values[1])
+    if len(values) == 3:
+        return (values[0], values[1], values[2], values[1])
+    return (values[0], values[1], values[2], values[3])
+
+
+def chromium_binary() -> str | None:
+    for name in CHROMIUM_BINS:
+        found = shutil.which(name)
+        if found:
+            return found
+    for path in CHROMIUM_APP_BINS:
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def python_with_fitz() -> str | None:
+    """找一个能 import fitz（PyMuPDF）的解释器，做分页和预览。"""
+    candidates = [
+        sys.executable,
+        "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3",
+        shutil.which("python3"),
+        "/opt/homebrew/bin/python3",
+        "/usr/bin/python3",
+    ]
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            probe = subprocess.run(
+                [candidate, "-c", "import fitz"], capture_output=True, timeout=60
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if probe.returncode == 0:
+            return candidate
+    return None
+
+
+def render_webkit(
+    html_path: Path,
+    pdf_path: Path,
+    paper: str,
+    landscape: bool,
+    margin: str,
+    timeout: int,
+) -> str:
+    """macOS WebKit 渲染：整篇连续一页，再由 pdfsheet.py 切成纸张页。"""
+    osascript = shutil.which("osascript")
+    if not osascript:
+        raise RuntimeError("这是 macOS 专有渲染器，找不到 osascript")
+    python = python_with_fitz()
+    if not python:
+        raise RuntimeError("分页/预览需要 PyMuPDF（pip install pymupdf）")
+
+    paper_w, paper_h = PAPER_PT[paper]
+    if landscape:
+        paper_w, paper_h = paper_h, paper_w
+    top, right, bottom, left = parse_margin(margin)
+    box_w = max(paper_w - left - right, 72.0)
+
+    raw_pdf = pdf_path.with_name(pdf_path.stem + ".full.pdf")
+    proc = subprocess.run(
+        [
+            osascript,
+            "-l",
+            "JavaScript",
+            str(SCRIPTS_DIR / "wk2pdf.js"),
+            str(html_path),
+            str(raw_pdf),
+            "{:.2f}".format(box_w),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    payload = None
+    for line in reversed((proc.stdout or "").strip().splitlines()):
+        try:
+            payload = json.loads(line)
+            break
+        except ValueError:
+            continue
+    if not payload or not payload.get("ok"):
+        detail = (payload or {}).get("error") or (proc.stderr or proc.stdout or "").strip()[-300:]
+        raise RuntimeError(
+            "{}（沙箱里 WebKit 起不来时，用沙箱外权限重跑）".format(detail or "WebKit 未产出 PDF")
+        )
+
+    cut = subprocess.run(
+        [
+            python,
+            str(SCRIPTS_DIR / "pdfsheet.py"),
+            "paginate",
+            "--in",
+            str(raw_pdf),
+            "--out",
+            str(pdf_path),
+            "--paper",
+            paper,
+            "--margin-pt",
+            "{:.2f},{:.2f},{:.2f},{:.2f}".format(top, right, bottom, left),
+            "--breaks",
+            json.dumps(payload.get("breaks", [])),
+            "--forced",
+            json.dumps(payload.get("forced") or []),
+        ]
+        + (["--landscape"] if landscape else []),
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    try:
+        raw_pdf.unlink()
+    except OSError:
+        pass
+    if cut.returncode != 0 or not pdf_path.exists():
+        raise RuntimeError("分页失败：" + (cut.stderr or cut.stdout or "").strip()[-300:])
+    return "webkit(macOS)"
+
+
+def render_pdf(
+    html_path: Path,
+    pdf_path: Path,
+    renderer: str,
+    timeout: int,
+    paper: str = "A4",
+    landscape: bool = False,
+    margin: str = "14mm 12mm",
+) -> str:
+    attempts: list[tuple[str, list[str] | None]] = []
     if renderer in ("auto", "chromium"):
-        for binary in CHROMIUM_BINS:
-            found = shutil.which(binary)
-            if not found:
-                continue
+        found = chromium_binary()
+        if found:
             profile = tempfile.mkdtemp(prefix="sheet-chromium-")
             for headless in ("--headless=new", "--headless"):
                 attempts.append(
                     (
-                        binary,
+                        found,
                         [
                             found,
                             headless,
@@ -390,7 +820,8 @@ def render_pdf(html_path: Path, pdf_path: Path, renderer: str, timeout: int) -> 
                         ],
                     )
                 )
-            break
+    if renderer in ("auto", "webkit") and sys.platform == "darwin":
+        attempts.append(("webkit(macOS)", None))
     if renderer in ("auto", "soffice"):
         soffice = shutil.which("soffice") or shutil.which("libreoffice")
         if soffice:
@@ -413,6 +844,12 @@ def render_pdf(html_path: Path, pdf_path: Path, renderer: str, timeout: int) -> 
     for name, cmd in attempts:
         if pdf_path.exists():
             pdf_path.unlink()
+        if cmd is None:
+            try:
+                return render_webkit(html_path, pdf_path, paper, landscape, margin, timeout)
+            except (RuntimeError, OSError, subprocess.SubprocessError, ValueError) as exc:
+                errors.append("{}: {}".format(name, exc))
+                continue
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -427,24 +864,64 @@ def render_pdf(html_path: Path, pdf_path: Path, renderer: str, timeout: int) -> 
 
 def pdf_info(pdf_path: Path) -> dict:
     info = {}
-    if not shutil.which("pdfinfo"):
+    if shutil.which("pdfinfo"):
+        proc = subprocess.run(["pdfinfo", str(pdf_path)], capture_output=True, text=True)
+        for line in proc.stdout.splitlines():
+            key, _, value = line.partition(":")
+            info[key.strip().lower()] = value.strip()
         return info
-    proc = subprocess.run(["pdfinfo", str(pdf_path)], capture_output=True, text=True)
-    for line in proc.stdout.splitlines():
-        key, _, value = line.partition(":")
-        info[key.strip().lower()] = value.strip()
+    python = python_with_fitz()
+    if python:
+        proc = subprocess.run(
+            [python, str(SCRIPTS_DIR / "pdfsheet.py"), "info", "--in", str(pdf_path)],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if proc.returncode == 0:
+            try:
+                return json.loads(proc.stdout.strip().splitlines()[-1])
+            except (ValueError, IndexError):
+                pass
     return info
 
 
 def make_preview(pdf_path: Path, prefix: Path, dpi: int, max_pages: int) -> list[Path]:
-    if not shutil.which("pdftoppm"):
+    if shutil.which("pdftoppm"):
+        cmd = ["pdftoppm", "-r", str(dpi), "-png"]
+        if max_pages > 0:
+            cmd += ["-f", "1", "-l", str(max_pages)]
+        cmd += [str(pdf_path), str(prefix)]
+        subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        return sorted(prefix.parent.glob(prefix.name + "-*.png"))
+    python = python_with_fitz()
+    if not python:
         return []
-    cmd = ["pdftoppm", "-r", str(dpi), "-png"]
-    if max_pages > 0:
-        cmd += ["-f", "1", "-l", str(max_pages)]
-    cmd += [str(pdf_path), str(prefix)]
-    subprocess.run(cmd, capture_output=True, text=True, timeout=180)
-    return sorted(prefix.parent.glob(prefix.name + "-*.png"))
+    proc = subprocess.run(
+        [
+            python,
+            str(SCRIPTS_DIR / "pdfsheet.py"),
+            "preview",
+            "--in",
+            str(pdf_path),
+            "--prefix",
+            str(prefix),
+            "--dpi",
+            str(dpi),
+            "--max-pages",
+            str(max_pages),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    if proc.returncode != 0:
+        return []
+    try:
+        payload = json.loads(proc.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return []
+    return [Path(item) for item in payload.get("previews", [])]
 
 
 # ---------------------------------------------------------------- 输出/打印
@@ -502,11 +979,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--paper", default="A4", choices=PAPERS)
     parser.add_argument("--landscape", action="store_true", help="横向")
     parser.add_argument("--margin", default="14mm 12mm", help="页边距（CSS 写法）")
-    parser.add_argument("--font", default=DEFAULT_FONT, help="字体栈（需含中文字体）")
+    default_font = MAC_FONT if sys.platform == "darwin" else DEFAULT_FONT
+    parser.add_argument("--font", default=default_font, help="字体栈（需含中文字体）")
     parser.add_argument("--font-size", type=float, default=7.4, help="代码字号 pt（正文略大）")
     parser.add_argument("--no-line-numbers", action="store_true", help="代码不加行号")
+    parser.add_argument(
+        "--no-comment-style",
+        action="store_true",
+        help="注释不做楷体/斜体处理（默认：注释里的汉字用楷体、西文用斜体）",
+    )
     parser.add_argument("--md-renderer", choices=["auto", "md2html", "builtin"], default="auto")
-    parser.add_argument("--renderer", choices=["auto", "chromium", "soffice"], default="auto")
+    parser.add_argument(
+        "--renderer", choices=["auto", "chromium", "webkit", "soffice"], default="auto"
+    )
     parser.add_argument("--timeout", type=int, default=180, help="PDF 渲染超时（秒）")
     parser.add_argument("--dpi", type=int, default=100, help="预览图 DPI")
     parser.add_argument("--preview-pages", type=int, default=4, help="最多预览多少页（0=全部）")
@@ -564,7 +1049,15 @@ def main(argv: list[str] | None = None) -> int:
     say("HTML: {}".format(html_path))
 
     try:
-        used = render_pdf(html_path, pdf_path, opts.renderer, opts.timeout)
+        used = render_pdf(
+            html_path,
+            pdf_path,
+            opts.renderer,
+            opts.timeout,
+            paper=opts.paper,
+            landscape=opts.landscape,
+            margin=opts.margin,
+        )
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         return 4
