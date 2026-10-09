@@ -75,7 +75,7 @@ body {
 }
 .file-head .name { font-size: ${name_pt}pt; font-weight: bold; }
 .file-head .sub { font-size: ${meta_pt}pt; color: #444; white-space: nowrap; }
-table.code { border-collapse: collapse; width: 100%; }
+table.code { border-collapse: collapse; width: 100%; font-family: $code_font; }
 table.code tr { break-inside: avoid; page-break-inside: avoid; }
 table.code td { vertical-align: top; padding: 0; }
 td.num {
@@ -88,17 +88,28 @@ td.num {
 }
 td.line { padding-left: 2.5mm !important; }
 td.line .ln { white-space: pre-wrap; overflow-wrap: anywhere; padding-left: 4mm; text-indent: -4mm; }
-pre.plain { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; font-family: $font; font-size: ${code_pt}pt; }
+pre.plain { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; font-family: $code_font; font-size: ${code_pt}pt; }
 
-/* 代码注释：汉字用楷体，西文用斜体（注释标记跟着一起变） */
-.cmt {
-  font-family: "Kaiti SC", "STKaiti", "KaiTi", "Kaiti TC", "Songti SC",
-               "Noto Serif CJK SC", "Noto Sans CJK SC", serif;
+/* 代码文件里的汉字走楷体：用 unicode-range 只接管 CJK 码位，西文/数字仍由
+   $code_font 后面的等宽字体渲染，所以代码列宽和字距都不变。
+   这里只列各方系统自带的楷体名字（macOS: Kaiti SC/STKaiti；Windows: KaiTi；
+   Linux 发行版: AR PL UKai、TW-Kai），**不默认绑定任何第三方下载字体**；
+   想用霞鹜文楷之类，把它的族名加到这一串最前面即可。一个楷体都取不到时
+   这条 @font-face 整体失效，中文回落原字体，不会变成方块。 */
+@font-face {
+  font-family: "SheetCJK";
+  src: local("Kaiti SC"), local("Kaiti TC"), local("STKaiti"), local("KaiTi"),
+       local("AR PL UKai CN"), local("AR PL UKai TW"), local("AR PL UKai HK"),
+       local("AR PL KaitiM GB"), local("TW-Kai");
+  unicode-range: U+2E80-2EFF, U+2F00-2FDF, U+3000-303F, U+31C0-31EF,
+                 U+3200-4DBF, U+4E00-9FFF, U+F900-FAFF, U+FE30-FE4F,
+                 U+FF00-FF60, U+FFE0-FFE6, U+20000-2FA1F;
 }
-/* 西文注释走轻量斜体：Helvetica Neue Light Italic（比等宽斜体瘦），
-   取不到时依次退到 Avenir Next、代码等宽字体、系统无衬线 */
+/* 注释正文继承代码字体（汉字同样是楷体），只有西文再叠一层轻量斜体：
+   Helvetica Neue Light Italic（比等宽斜体瘦），取不到时依次退到
+   Avenir Next、代码等宽字体、系统无衬线 */
 .cmt i {
-  font-family: "Helvetica Neue", "Avenir Next", $font, sans-serif;
+  font-family: "Helvetica Neue", "Avenir Next", $code_font, sans-serif;
   font-style: italic;
   font-weight: 300;
 }
@@ -126,7 +137,7 @@ pre.plain { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; font-fami
   page-break-inside: avoid;
 }
 .md-body pre code {
-  font-family: $font;
+  font-family: $code_font;
   font-size: ${code_pt}pt;
   line-height: 1.45;
   white-space: pre-wrap;
@@ -134,7 +145,7 @@ pre.plain { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; font-fami
   background: none;
   padding: 0;
 }
-.md-body code { font-family: $font; font-size: ${code_pt}pt; background: #ececec; padding: 0 .6mm; }
+.md-body code { font-family: $code_font; font-size: ${code_pt}pt; background: #ececec; padding: 0 .6mm; }
 .md-body blockquote {
   margin: 0 0 2.5mm 0;
   padding: 0 0 0 3mm;
@@ -452,6 +463,50 @@ def profile_for(label: str | None) -> dict:
     return COMMENT_PROFILES[kind]
 
 
+# Markdown 围栏代码块的语言标记 → 注释规则（与同名扩展名的处理保持一致）
+LANG_PROFILE = {
+    "c": "c", "h": "c", "cpp": "c", "c++": "c", "cc": "c", "cxx": "c", "hpp": "c",
+    "objective-c": "c", "objc": "c", "csharp": "c", "cs": "c", "c#": "c", "java": "c",
+    "javascript": "c", "js": "c", "jsx": "c", "typescript": "c", "ts": "c", "tsx": "c",
+    "go": "c", "golang": "c", "rust": "c", "rs": "c", "swift": "c", "kotlin": "c",
+    "kt": "c", "scala": "c", "dart": "c", "php": "c", "qml": "c", "glsl": "c",
+    "proto": "c", "protobuf": "c", "css": "c", "scss": "c", "less": "c", "json5": "c",
+    "python": "hash", "python3": "hash", "py": "hash", "shell": "hash", "sh": "hash",
+    "bash": "hash", "zsh": "hash", "fish": "hash", "perl": "hash", "ruby": "hash",
+    "rb": "hash", "yaml": "hash", "yml": "hash", "toml": "hash", "ini": "hash",
+    "makefile": "hash", "dockerfile": "hash", "cmake": "hash", "r": "hash",
+    "julia": "hash", "nix": "hash", "powershell": "hash", "ps1": "hash", "hcl": "hash",
+    "sql": "sql", "haskell": "sql", "hs": "sql", "elm": "sql",
+    "lua": "lua",
+    "html": "html", "xml": "html", "svg": "html", "vue": "html", "svelte": "html",
+    "asm": "asm", "nasm": "asm",
+    "latex": "tex", "tex": "tex",
+    "lisp": "lisp", "clojure": "lisp", "scheme": "lisp",
+    "vim": "vim",
+}
+
+FENCE_RE = re.compile(r"<pre><code([^>]*)>(.*?)</code></pre>", re.S)
+FENCE_LANG_RE = re.compile(r"""language-([A-Za-z0-9_+#.-]+)""")
+
+
+def style_markdown_fences(rendered: str, style_comments: bool) -> str:
+    """Markdown 渲染出的围栏代码块套用与源码文件相同的注释规则。"""
+    def repl(match: re.Match[str]) -> str:
+        attrs, inner = match.group(1), match.group(2)
+        found = FENCE_LANG_RE.search(attrs)
+        # 语言标记认不出来时按 generic 处理（和未知扩展名的源码文件一致）
+        profile = COMMENT_PROFILES[LANG_PROFILE.get(found.group(1).lower(), "generic")] \
+            if found else COMMENT_PROFILES["generic"]
+        text = html.unescape(inner)
+        if text.endswith("\n"):
+            text = text[:-1]  # 围栏正文结尾的换行不算一行
+        state: dict[str, str | None] = {"block": None, "quote": None}
+        lines = [render_code_line(line, state, profile, style_comments) for line in text.split("\n")]
+        return "<pre><code{}>{}</code></pre>".format(attrs, "\n".join(lines))
+
+    return FENCE_RE.sub(repl, rendered)
+
+
 def comment_segments(
     line: str, state: dict, profile: dict
 ) -> list[tuple[bool, str]]:
@@ -581,12 +636,16 @@ def code_section(
     return '<section class="sheet">{}{}</section>'.format(head, body)
 
 
-def markdown_section(label: str, rendered: str) -> str:
+def markdown_section(label: str, rendered: str, style_comments: bool = True) -> str:
     head = (
         '<div class="file-head"><span class="name">{}</span>'
         '<span class="sub">Markdown</span></div>'.format(html.escape(label))
     )
-    return '<section class="sheet"><div class="md-body">{}</div>{}</section>'.format(head, rendered)
+    # 注意：file-head 在 md-body 之外，正文必须放进 md-body 里，
+    # 否则 .md-body 下面的标题/表格/代码块样式全部落空。
+    return '<section class="sheet">{}<div class="md-body">{}</div></section>'.format(
+        head, style_markdown_fences(rendered, style_comments)
+    )
 
 
 def build_html(sources: list[tuple[str, Path | None, str, bool]], opts) -> str:
@@ -601,6 +660,8 @@ def build_html(sources: list[tuple[str, Path | None, str, bool]], opts) -> str:
         orientation="landscape" if opts.landscape else "portrait",
         margin=opts.margin,
         font=opts.font,
+        # 代码区字体：先挂只接管 CJK 的楷体族，其余码位仍按 --font 走
+        code_font='"SheetCJK", {}'.format(opts.font),
         content_w="{:.2f}".format(content_w),
         pad_top="{:.2f}".format(pad_top),
         pad_right="{:.2f}".format(pad_right),
@@ -618,7 +679,13 @@ def build_html(sources: list[tuple[str, Path | None, str, bool]], opts) -> str:
     sections = []
     for label, path, text, is_markdown in sources:
         if is_markdown:
-            sections.append(markdown_section(label, render_markdown(path, text, opts.md_renderer)))
+            sections.append(
+                markdown_section(
+                    label,
+                    render_markdown(path, text, opts.md_renderer),
+                    not opts.no_comment_style,
+                )
+            )
         else:
             sections.append(
                 code_section(
@@ -986,7 +1053,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--no-comment-style",
         action="store_true",
-        help="注释不做楷体/斜体处理（默认：注释里的汉字用楷体、西文用斜体）",
+        help="西文注释不加细斜体（汉字楷体由代码字体统一决定，不受此开关影响）",
     )
     parser.add_argument("--md-renderer", choices=["auto", "md2html", "builtin"], default="auto")
     parser.add_argument(
@@ -1038,7 +1105,7 @@ def main(argv: list[str] | None = None) -> int:
         print("错误：没有可排版的内容", file=sys.stderr)
         return 2
 
-    out_dir = Path(opts.out).expanduser()
+    out_dir = Path(opts.out).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     opts.name = opts.name or default_name([p.resolve() for p in paths])
     opts.title = opts.title or "{} （{} 个文件）".format(opts.name, len(sources))
