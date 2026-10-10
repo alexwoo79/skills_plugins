@@ -20,7 +20,8 @@ The panel is a rectangle under the bar:
 ```
 󰖟 Proxy                                    On · working
 ──────────────────────────────────────────────────────
-Endpoint   [ 10.10.10.111:7890                  ]  ⏎
+Endpoint   [ 10.10.10.111:7890        ]  [ Clear ]
+           press Enter to re-point the running proxy
 Health        2613ms (checked 21:16:23)
 Exit IP       155.117.84.157
 ──────────────────────────────────────────────────────
@@ -54,9 +55,10 @@ Layers
 
 | Control | Action |
 |---|---|
-| **Endpoint** field | Focused when the panel opens; type `host:port`; Enter applies it (and re-points a running proxy) and saves it |
+| **Endpoint** field | Type `host:port`; Enter applies it (and re-points a running proxy) and saves it. Opens focused, with the old value selected |
 | **System proxy** switch | `proxyctl on --address <configured>` or `proxyctl off` |
 | **TUN mode** switch | `proxyctl tun on --address <endpoint>` / `proxyctl tun off` |
+| **Clear** | `proxyctl off`, `proxyctl tun off` while mihomo runs, and forget the remembered address |
 | Check | Re-run the health and exit-IP probes |
 | Copy | Copy the status block to the clipboard |
 
@@ -71,6 +73,35 @@ path any more.
 settings panel sees the same value. An address typed but not applied is
 ignored; a malformed one is refused and the field turns urgent.
 
+## Clearing every endpoint
+
+A remembered address is what makes a new network look like the old one: the
+panel re-seeds from it, and when DHCP moves the proxy host that address is
+simply wrong. **Clear** is the way out of that state. One click:
+
+- runs `proxyctl off`, which clears the endpoint from the desktop proxy, the
+  session env file, the browser flags, git and every dev-tool config — the same
+  rows the Layers list shows;
+- runs `proxyctl tun off` when mihomo is running, because TUN owns the network
+  layer and `off` does not touch it;
+- forgets the address this widget stores (it writes an empty one to
+  `shell.json`), so the next boot starts from an empty field instead of the last
+  network's endpoint;
+- resets the health and exit-IP measurements and reports the result in the panel
+  (`Done  Cleared — proxy off, endpoint forgotten`).
+
+The field then reads `No endpoint yet — type host:port, then press Enter or flip
+the switch`, and the caption under it follows the state as you type: what is
+remembered, whether the draft can be handed to proxyctl, and — when the proxy is
+on but the probe fails — `Not answering — if the network changed, clear it and
+enter the new host:port`.
+
+The panel opens with the endpoint field focused and its contents selected, so
+after a network move the first keystroke is already the new address. That is
+why the panel is a `KeyboardPanel` (layer-shell, primes keyboard focus on open)
+and not a `PopupCard`: an xdg-popup under the bar never receives the keystrokes
+a text field needs. `Esc` closes the panel.
+
 **TUN mode** is the network-layer option from the
 `omarchy-proxyctl` skill: it routes every app through the local mihomo using
 the endpoint above, which makes the per-tool configs unnecessary. It needs
@@ -83,10 +114,9 @@ panel's health and exit IP are measured straight through the tunnel, and the
 bar label reads `tun` instead of `off`.
 
 Hovering the bar widget shows the endpoint, the measured latency and when it
-was last checked, plus `TUN on` while TUN is running. The panel is a keyboard
-panel — it takes the keys while it is open, so the endpoint can be typed
-straight away — and a click outside, `Esc`, or a second click on the widget
-closes it.
+was last checked, plus `TUN on` while TUN is running. Outside-click, `Esc`
+or a second click on the widget closes the panel; while it is open the panel
+holds the keyboard, with the endpoint field focused.
 
 The widget never opens a window of its own. Omarchy's presentation terminal
 (`omarchy-launch-floating-terminal-with-presentation`) holds itself open until
@@ -100,6 +130,7 @@ omarchy-shell io.github.alexwoo79.proxy panel    # open/close
 omarchy-shell io.github.alexwoo79.proxy toggle   # enable/disable
 omarchy-shell io.github.alexwoo79.proxy check    # re-probe
 omarchy-shell io.github.alexwoo79.proxy apply 10.10.10.111:7890
+omarchy-shell io.github.alexwoo79.proxy clear    # stop both paths, forget the address
 ```
 
 ## Where the state comes from
@@ -107,7 +138,9 @@ omarchy-shell io.github.alexwoo79.proxy apply 10.10.10.111:7890
 The widget reads the file `proxyctl` writes for the desktop session
 (`~/.config/environment.d/proxy.conf`). Present = proxy on, missing = direct,
 so `proxyctl on` / `off` / `restore` from a terminal moves the bar
-immediately. Nothing is written except by `proxyctl` itself.
+immediately. Proxy state is only ever written by `proxyctl` itself; on top of
+that the widget stores its own remembered `address` and edits it from the panel,
+including clearing it to empty.
 
 The health probe is one bounded `curl` through the proxy
 (`https://www.gstatic.com/generate_204`, 8 s cap), which is why the bar can
@@ -121,7 +154,7 @@ or from the Omarchy settings panel.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `address` | `10.10.10.111:7890` | Endpoint enabled when the proxy is off |
+| `address` | `10.10.10.111:7890` | Endpoint enabled when the proxy is off. Empty means nothing is remembered — the state Clear leaves behind |
 | `checkInterval` | `60` | Seconds between health probes (30–3600) |
 | `healthCheck` | `true` | Set `false` for a display-and-toggle-only widget |
 | `proxyctlPath` | `~/.local/bin/proxyctl` | Binary to run for toggles |

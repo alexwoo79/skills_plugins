@@ -155,6 +155,14 @@ function toggleArgs(proxyOn, endpoint, proxyctl) {
   return [binary, "on", "--address", address]
 }
 
+// The layer wipe. `proxyctl off` clears the desktop proxy, the session env
+// file, the browser flags, git and every dev-tool config in one call, which is
+// what the panel's Clear action means by "every endpoint".
+function offArgs(proxyctl) {
+  var binary = String(proxyctl == null ? "" : proxyctl).trim()
+  return binary === "" ? [] : [binary, "off"]
+}
+
 // TUN is network-layer: one upstream for every app, so the same endpoint the
 // panel shows is the one it hands to mihomo.
 // `on` is the DESIRED state, not the current one.
@@ -386,6 +394,29 @@ function exitIpLine(proxyOn, busy, exitIp, tunRunning) {
   return exitIp !== "" ? exitIp : "\u2014"
 }
 
+// The line under the endpoint field. The panel otherwise leaves three things
+// to guesswork: whether anything is remembered at all, whether what is typed
+// is usable, and whether the running proxy still points at the network this
+// machine is on. The last case is the one that matters here — a proxy that is
+// "on" but failing is usually an endpoint that moved with DHCP, so the hint
+// says what to do about it instead of just showing a red field.
+function endpointHint(state) {
+  var draft = String(state && state.draft != null ? state.draft : "").trim()
+  var live = String(state && state.endpoint != null ? state.endpoint : "").trim()
+  var remembered = String(state && state.remembered != null ? state.remembered : "").trim()
+  var proxyOn = !!(state && state.proxyOn)
+  var failed = !!(state && state.failed)
+  if (draft === "") {
+    if (proxyOn && live !== "") return "Running through " + live + " \u2014 type host:port to re-point it"
+    if (remembered !== "") return "Remembered " + remembered + " \u2014 type host:port to replace it, or flip the switch"
+    return "No endpoint yet \u2014 type host:port, then press Enter or flip the switch"
+  }
+  if (!isAddress(draft)) return "Enter an address as host:port \u2014 the switch enables it"
+  if (proxyOn && draft !== live) return "Press Enter to point the running proxy at " + draft
+  if (failed) return "Not answering \u2014 if the network changed, clear it and enter the new host:port"
+  return ""
+}
+
 // Clipboard block for the panel's copy action: the same facts the panel
 // shows, in a shape that reads well pasted into a chat or an issue.
 function statusSummary(state) {
@@ -425,7 +456,9 @@ function tooltipText(state) {
     }
     parts.push("left-click opens the panel")
   } else {
-    parts.push("enable " + endpoint + " from the panel")
+    parts.push(endpoint === ""
+      ? "no endpoint set \u2014 open the panel to enter host:port"
+      : "enable " + endpoint + " from the panel")
     parts.push("left-click opens the panel")
   }
   return parts.join(" \u00b7 ")
@@ -451,6 +484,7 @@ if (typeof module !== "undefined") {
     exitIpArgs: exitIpArgs,
     cleanExitIp: cleanExitIp,
     toggleArgs: toggleArgs,
+    offArgs: offArgs,
     tunArgs: tunArgs,
     tunProbeArgs: tunProbeArgs,
     tunExitIpArgs: tunExitIpArgs,
@@ -465,6 +499,7 @@ if (typeof module !== "undefined") {
     clockTime: clockTime,
     healthLine: healthLine,
     exitIpLine: exitIpLine,
+    endpointHint: endpointHint,
     statusSummary: statusSummary,
     tooltipText: tooltipText
   }

@@ -313,4 +313,38 @@ const tunTip = M.tooltipText({ on: false, configured: "10.10.10.111:7890", tun: 
 has(tunTip, "TUN on 10.10.10.111:7890", "tooltip leads with TUN when the per-app proxy is off")
 ok(!tunTip.includes("Proxy off"), "tooltip does not claim the machine is direct while TUN runs")
 
+// --- clearing every endpoint ------------------------------------------------
+// Clear is proxyctl's layer wipe plus a TUN stop: `off` covers the desktop
+// proxy, the session env file, the browser flags, git and the dev tools, and
+// mihomo is a second process the same command does not touch.
+eq(M.offArgs("/bin/proxyctl").join(" "), "/bin/proxyctl off", "clear runs proxyctl off")
+eq(M.offArgs("  ").length, 0, "clear needs a binary")
+eq(M.offArgs(null).length, 0, "clear survives a null binary")
+eq(M.tunArgs(false, "", "/bin/proxyctl").join(" "), "/bin/proxyctl tun off", "clear stops TUN with tun off")
+
+// The caption under the endpoint field is where the panel explains itself:
+// nothing remembered, something to replace, a typo, or a running proxy that
+// stopped answering (the network moved under it).
+has(M.endpointHint({ draft: "", remembered: "", proxyOn: false }),
+  "No endpoint yet", "empty field with nothing remembered")
+has(M.endpointHint({ draft: "", remembered: "10.0.0.5:7890", proxyOn: false }),
+  "Remembered 10.0.0.5:7890", "empty field with a remembered address")
+has(M.endpointHint({ draft: "", endpoint: "10.0.0.5:7890", proxyOn: true }),
+  "Running through 10.0.0.5:7890", "empty field while a proxy runs")
+has(M.endpointHint({ draft: "garbage", remembered: "10.0.0.5:7890" }),
+  "host:port", "a typo is called out")
+has(M.endpointHint({ draft: "10.0.0.9:7890", endpoint: "10.0.0.5:7890", proxyOn: true }),
+  "Press Enter to point the running proxy at 10.0.0.9:7890", "draft differs from the running endpoint")
+has(M.endpointHint({ draft: "10.0.0.5:7890", endpoint: "10.0.0.5:7890", proxyOn: true, failed: true }),
+  "Not answering", "a failing proxy suggests clearing and re-entering")
+eq(M.endpointHint({ draft: "10.0.0.5:7890", endpoint: "10.0.0.5:7890", proxyOn: true, failed: false }),
+  "", "an applied, healthy endpoint needs no caption")
+eq(M.endpointHint(null), M.endpointHint({ draft: "", remembered: "", proxyOn: false }),
+  "null state does not throw")
+
+// A cleared widget has no endpoint at all: the tooltip and the copied block
+// have to say so instead of rendering an empty gap.
+has(M.tooltipText({ on: false, configured: "", health: null }), "no endpoint set", "tooltip names the cleared state")
+has(M.statusSummary({ on: false, configured: "", tun: "stopped" }), "Endpoint: \u2014", "copied block shows a dash for no endpoint")
+
 console.log("Model.js: all assertions passed")

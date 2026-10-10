@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.alexwoo79.proxy",
   "name": "Proxy",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "alexwoo79",
   "license": "MIT",
   "description": "System proxy state in the bar, driven by proxyctl: on/off, the endpoint in use, a live health probe through the proxy, and click to toggle.",
@@ -10,7 +10,7 @@
   "entryPoints": { "barWidget": "BarWidget.qml" },
   "barWidget": {
     "displayName": "Proxy (proxyctl)",
-    "description": "Click opens a panel: endpoint input, system proxy and TUN switches, live health and exit IP, and the state of every layer proxyctl writes",
+    "description": "Click opens a panel: endpoint input with Clear (wipes the endpoint from every layer and forgets it), system proxy and TUN switches, live health and exit IP, and the state of every layer proxyctl writes",
     "category": "System",
     "defaultSection": "right",
     "allowMultiple": false,
@@ -26,7 +26,7 @@
         "key": "address",
         "type": "string",
         "label": "Proxy address",
-        "description": "host:port enabled when the proxy is off. Use an endpoint that is actually serving a proxy — the address drifts when DHCP moves it.",
+        "description": "host:port enabled when the proxy is off. Use an endpoint that is actually serving a proxy — the address drifts when DHCP moves it, and the panel's Clear button forgets it so a new network starts from an empty field.",
         "defaultValue": "10.10.10.111:7890"
       },
       {
@@ -50,7 +50,7 @@
         "key": "proxyctlPath",
         "type": "path",
         "label": "proxyctl binary",
-        "description": "Leave empty to use ~/.local/bin/proxyctl.",
+        "description": "Leave empty to use whichever proxyctl the session finds on PATH.",
         "defaultValue": ""
       }
     ]

@@ -13,7 +13,15 @@ import "Model.js" as Model
 //
 // Panel, a rectangle below the bar: the endpoint, the health line with the
 // measured latency, the exit IP the proxy presents to the world, and the
-// actions — the enable/disable switch, re-check, copy a status block.
+// actions — the enable/disable switch, re-check, copy a status block, and
+// Clear, which stops both proxy paths and forgets the endpoint.
+//
+// The panel is a KeyboardPanel, not a PopupCard. It holds a text field, and
+// the bar's layer surface never owns the keyboard, so an xdg-popup child of it
+// cannot take the keystrokes an input field needs. KeyboardPanel primes
+// keyboard focus on open, which is what makes the endpoint field typeable —
+// and it is focused and pre-selected the moment the panel appears, so a
+// machine that moved networks is a matter of typing the new endpoint.
 //
 // The plugin deliberately never opens a window of its own: the Omarchy
 // presentation terminal holds itself open until a key is pressed, so a
@@ -45,11 +53,24 @@ BarWidget {
   readonly property string configHome: Quickshell.env("XDG_CONFIG_HOME") || (root.homeDir + "/.config")
   readonly property string envFilePath: root.configHome + "/environment.d/proxy.conf"
 
+  // Empty means "whatever `proxyctl` the session finds first": the command is
+  // run by name so it resolves through PATH like it would in a terminal. A
+  // hardcoded ~/.local/bin/proxyctl assumed one install layout and broke on
+  // machines that put it elsewhere (mise shims, /usr/local/bin, a distro
+  // package), where every click then failed with "Process failed to start".
   readonly property string proxyctlPath: {
     var configured = String(root.setting("proxyctlPath", "") || "").trim()
-    return configured !== "" ? configured : root.homeDir + "/.local/bin/proxyctl"
+    return configured !== "" ? configured : "proxyctl"
   }
-  readonly property string configuredAddress: Model.normalizeAddress(root.setting("address", Model.DEFAULT_ADDRESS), Model.DEFAULT_ADDRESS)
+  // The address this widget remembers. Only a value that can actually be
+  // handed to proxyctl counts: an empty stored value is the state Clear leaves
+  // behind, and it must mean "nothing remembered" rather than quietly falling
+  // back to whatever endpoint the last network needed.
+  readonly property string configuredAddress: {
+    var raw = root.setting("address", Model.DEFAULT_ADDRESS)
+    var text = String(raw == null ? "" : raw).trim()
+    return Model.isAddress(text) ? text : ""
+  }
   readonly property int intervalSeconds: Model.checkIntervalSeconds(root.setting("checkInterval", Model.DEFAULT_CHECK_INTERVAL_SECONDS))
   readonly property bool probeEnabled: root.setting("healthCheck", true) !== false
 
@@ -64,6 +85,13 @@ BarWidget {
   property bool exitIpBusy: false
   property bool copied: false
   property string copyError: ""
+  // Clear runs two proxyctl calls (off, then tun off when mihomo was up), so it
+  // carries its own busy flag, remembers whether TUN was part of the wipe, and
+  // reports what happened in one line.
+  property bool clearing: false
+  property bool clearTunRunning: false
+  property bool clearTunPending: false
+  property string notice: ""
 
   // proxyctl's own view of the layers (parsed from `proxyctl status`) and the
   // dev-tool snapshot (`proxyctl tools list`).
@@ -85,7 +113,16 @@ BarWidget {
   // panel is open, so the switch always acts on what the user can see.
   readonly property string draftAddress: endpointField.text.trim()
   readonly property bool draftValid: Model.isAddress(root.draftAddress)
-  readonly property bool draftPending: root.proxyOn && root.draftValid && root.draftAddress !== root.endpoint
+  // An empty field is a legitimate state (nothing remembered yet, or just
+  // cleared), so only text that was actually typed wrong turns the field red.
+  readonly property bool draftInvalid: root.draftAddress !== "" && !root.draftValid
+  readonly property string endpointHintText: Model.endpointHint({
+    draft: root.draftAddress,
+    endpoint: root.endpoint,
+    remembered: root.configuredAddress,
+    proxyOn: root.proxyOn,
+    failed: Model.healthFailed(root.health)
+  })
   readonly property color foreground: bar ? bar.barForeground : Color.foreground
   readonly property color dimColor: Qt.darker(root.foreground, 1.5)
   readonly property color urgentColor: bar ? bar.urgent : Color.urgent
@@ -133,7 +170,8 @@ BarWidget {
   implicitHeight: root.barSize
 
   // Seed the field so scripted toggles (IPC) work before the panel was ever
-  // opened; open() re-seeds from the live endpoint each time.
+  // opened; open() only fills a field that is still empty, so a cleared or
+  // half-typed endpoint is never replaced behind the user's back.
   Component.onCompleted: endpointField.text = root.liveAddress
 
   // One read of the managed env file. A missing file is not an error: it is
@@ -162,14 +200,33 @@ BarWidget {
     envView.reload()
   }
 
-  // Persist the address the Omarchy way: updateEntryInline merges settings
-  // into this widget's entry in ~/.config/omarchy/shell.json, the same API
-  // the clock, tray and power widgets use. Returns false when the shell API is
+  // Persist the address the Omarchy way: updateEntryInline writes this
+  // widget's entry in ~/.config/omarchy/shell.json, the same API the clock,
+  // tray and power widgets use. Returns false when the shell API is
   // unavailable, in which case the value still holds for this session.
+  //
+  // That API replaces the whole entry with the object it is handed, so the
+  // remaining settings have to be carried over: sending only id+address used
+  // to drop the user's proxyctlPath on the first toggle and leave the widget
+  // calling the built-in default.
   function persistAddress(address) {
     if (!root.bar || !root.bar.shell || typeof root.bar.shell.updateEntryInline !== "function") return false
-    root.bar.shell.updateEntryInline(root.moduleName, { id: root.moduleName, address: address })
+    var entry = { id: root.moduleName, address: address }
+    var current = root.settings || {}
+    for (var key in current) {
+      if (key !== "id" && key !== "address") entry[key] = current[key]
+    }
+    root.bar.shell.updateEntryInline(root.moduleName, entry)
     return true
+  }
+
+  // One message for "you asked to enable something, but there is no usable
+  // address". After Clear the field is legitimately empty, which is a
+  // different problem from a typo and deserves to say so.
+  function noAddressError() {
+    if (root.draftAddress === "" && root.configuredAddress === "")
+      return "no endpoint yet \u2014 type host:port first"
+    return "invalid address: " + (root.draftAddress === "" ? "(empty)" : root.draftAddress)
   }
 
   // Enter in the endpoint field: validate, remember, and if the proxy is
@@ -191,12 +248,56 @@ BarWidget {
     return true
   }
 
+  // Clear every endpoint. Two proxyctl calls, in order, because they own
+  // different layers: `off` wipes the desktop proxy, the session env file, the
+  // browser flags, git and the dev-tool configs; `tun off` stops mihomo. Then
+  // the widget forgets the address it would otherwise re-seed from on the next
+  // boot — that remembered value is what made a new network look like the old
+  // one.
+  function clearEndpoints() {
+    if (root.busy || root.tunBusy || root.clearing) return
+    root.lastError = ""
+    root.notice = ""
+    endpointField.text = ""
+    root.persistAddress("")
+    root.health = null
+    root.exitIp = ""
+    root.exitIpBusy = false
+    var args = Model.offArgs(root.proxyctlPath)
+    if (args.length === 0) {
+      root.finishClear("no proxyctl binary to run")
+      return
+    }
+    root.clearing = true
+    root.clearTunRunning = root.tunRunning
+    root.clearTunPending = root.tunRunning
+    clearProc.stage = "off"
+    clearProc.firstError = ""
+    clearProc.command = args
+    clearProc.running = true
+  }
+
+  function finishClear(detail) {
+    var tunWas = root.clearTunRunning
+    root.clearing = false
+    root.clearTunRunning = false
+    root.clearTunPending = false
+    root.lastError = detail
+    if (detail === "") {
+      root.notice = "Cleared \u2014 proxy off" + (tunWas ? ", TUN off" : "") + ", endpoint forgotten"
+      // Stopping mihomo is not instant, so re-read the status until it settles.
+      if (tunWas) root.tunSettleTicks = 4
+    }
+    Qt.callLater(root.refresh)
+    Qt.callLater(root.refreshStatus)
+  }
+
   function toggle() {
-    if (root.busy) return
+    if (root.busy || root.clearing) return
     // Enabling uses the address in the field — the one the user just read.
     if (!root.proxyOn && root.draftAddress === "") endpointField.text = root.configuredAddress
     if (!root.proxyOn && !root.draftValid) {
-      root.lastError = "invalid address: " + (root.draftAddress === "" ? "(empty)" : root.draftAddress)
+      root.lastError = root.noAddressError()
       return
     }
     var target = root.proxyOn ? root.liveAddress : root.draftAddress
@@ -255,10 +356,10 @@ BarWidget {
   // TUN is the network-layer switch from the skill: it routes every app
   // through the local mihomo, so it takes the same upstream the panel shows.
   function toggleTun() {
-    if (root.tunBusy) return
+    if (root.tunBusy || root.clearing) return
     if (!root.tunRunning && root.draftAddress === "") endpointField.text = root.configuredAddress
     if (!root.tunRunning && !root.draftValid) {
-      root.lastError = "invalid address: " + (root.draftAddress === "" ? "(empty)" : root.draftAddress)
+      root.lastError = root.noAddressError()
       return
     }
     // tunArgs takes the DESIRED state: the switch always asks for the opposite
@@ -299,15 +400,16 @@ BarWidget {
     root.popupOpen = true
     root.copied = false
     root.copyError = ""
-    endpointField.text = root.liveAddress
-    // KeyboardPanel focuses its focusTarget once the card has mapped; this
-    // queued call lands after that one, so the field holds the keys from the
-    // first open onwards. selectAll lets a new address be typed straight over
-    // the old one.
+    root.notice = ""
+    // Seed only an empty field. A draft the user is part-way through typing —
+    // or one Clear just emptied — has to survive a reopen instead of being
+    // replaced by the remembered address again.
+    if (endpointField.text.trim() === "") endpointField.text = root.liveAddress
+    // KeyboardPanel gives the panel the keyboard and focuses the field; the
+    // selection makes "the network changed, type the new endpoint" a single
+    // action instead of select-all-then-type.
     Qt.callLater(function() {
-      if (!root.popupOpen) return
-      endpointField.forceActiveFocus()
-      endpointField.selectAll()
+      if (root.popupOpen) endpointField.selectAll()
     })
     root.checkExitIp()
     root.checkNow()
@@ -401,6 +503,39 @@ BarWidget {
       toggleProc.errText = ""
       Qt.callLater(root.refresh)
       Qt.callLater(root.refreshStatus)
+    }
+  }
+
+  // The wipe, in up to two steps over the same Process: `proxyctl off` first,
+  // then `proxyctl tun off` when mihomo was running. The first error is kept —
+  // the point is to leave nothing behind, so a failed first step still gets the
+  // second one, and the panel shows what did not work.
+  Process {
+    id: clearProc
+    command: []
+    property string stage: "off"
+    property string errText: ""
+    property string firstError: ""
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: clearProc.errText = text
+    }
+    onExited: function(exitCode) {
+      var detail = clearProc.errText.trim()
+      clearProc.errText = ""
+      if (exitCode !== 0 && clearProc.firstError === "")
+        clearProc.firstError = "proxyctl " + clearProc.stage + " exit " + exitCode + (detail !== "" ? ": " + detail : "")
+      if (root.clearTunPending) {
+        var args = Model.tunArgs(false, "", root.proxyctlPath)
+        root.clearTunPending = false
+        if (args.length > 0) {
+          clearProc.stage = "tun off"
+          clearProc.command = args
+          clearProc.running = true
+          return
+        }
+      }
+      root.finishClear(clearProc.firstError)
     }
   }
 
@@ -525,6 +660,11 @@ BarWidget {
       root.toggleTun()
     }
 
+    // Stop both proxy paths and forget the endpoint this widget remembers.
+    function clear(): void {
+      root.clearEndpoints()
+    }
+
     // Quickshell refuses untyped IPC arguments ("QVariant cannot be used
     // across IPC"), so the address is declared as a string.
     function apply(address: string): void {
@@ -544,249 +684,257 @@ BarWidget {
     }
   }
 
-  // The details panel. KeyboardPanel rather than PopupCard: PopupCard is an
-  // xdg-popup, and an xdg-popup only receives keys once a click or a hover has
-  // already routed focus through its parent surface. The bar is a layer
-  // surface with no keyboard focus of its own, so that never happened here and
-  // the endpoint field was visible but untypeable. KeyboardPanel is a real
-  // layer-shell surface with the brief Wayland Exclusive→OnDemand focus prime
-  // every first-party panel that needs typing relies on (the network panel's
-  // passphrase prompt, the clock's birth year). It anchors the card under the
-  // bar, owns outside-click dismissal and the popout slot, and routes
-  // owner.close() back here.
+  // The details panel. KeyboardPanel anchors it under the bar, owns
+  // outside-click dismissal and the popout slot, and routes owner.close() back
+  // here. It is the keyboard-capable sibling of PopupCard: the panel takes the
+  // keyboard while it is open (a brief Exclusive prime, then OnDemand) and
+  // focuses `focusTarget`, which is what makes the endpoint field editable.
   KeyboardPanel {
     id: popup
     anchorItem: root
     bar: root.bar
     owner: root
     open: root.popupOpen
-    // Typing the endpoint is the one thing this panel is for, so the field
-    // takes focus as soon as the card maps.
     focusTarget: endpointField
-    contentWidth: popup.fittedContentWidth(Style.space(330))
+    contentWidth: popup.fittedContentWidth(Style.space(360))
     contentHeight: popup.fittedContentHeight(panel.implicitHeight)
 
-    PanelKeyCatcher {
-      id: panelKeys
+    Column {
+      id: panel
       anchors.fill: parent
-      // While the field owns the keys the catcher steps aside, so typing,
-      // selecting and Enter reach it; otherwise Escape closes the panel and
-      // Tab hands over to the neighbouring bar panel.
-      blocked: endpointField.activeFocus
+      spacing: Style.space(10)
 
-      onCloseRequested: root.close()
-      onTabRequested: function(direction) {
-        if (root.bar && typeof root.bar.switchPanelFrom === "function") root.bar.switchPanelFrom(root, direction)
-      }
+      // Esc leaves the panel from anywhere in it: the field and the buttons all
+      // bubble the key up to here. (Outside-click and a second click on the
+      // widget are handled by KeyboardPanel and togglePanel().)
+      Keys.onEscapePressed: root.close()
 
-      Column {
-        id: panel
-        anchors.fill: parent
-        spacing: Style.space(10)
+      // Header: glyph, title, state on the right.
+      Item {
+        width: panel.width
+        height: Math.max(headerGlyph.implicitHeight, headerTitle.implicitHeight, headerState.implicitHeight)
 
-        // Header: glyph, title, state on the right.
-        Item {
-          width: panel.width
-          height: Math.max(headerGlyph.implicitHeight, headerTitle.implicitHeight, headerState.implicitHeight)
-
-          Text {
-            id: headerGlyph
-            anchors.left: parent.left
-            anchors.verticalCenter: parent.verticalCenter
-            text: Model.GLYPH
-            color: root.stateColor
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.iconLarge
-          }
-
-          Text {
-            id: headerTitle
-            anchors.left: headerGlyph.right
-            anchors.leftMargin: Style.space(6)
-            anchors.verticalCenter: parent.verticalCenter
-            text: "Proxy"
-            color: root.foreground
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.title
-            font.bold: true
-          }
-
-          Text {
-            id: headerState
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-            text: root.panelStateText
-            color: root.panelStateColor
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.body
-          }
-        }
-
-        PanelSeparator { foreground: root.foreground }
-
-        // The endpoint is the one thing the user edits here: type host:port,
-        // press Enter to apply it (and re-apply it to a running proxy), or just
-        // flip the switch below to enable/disable with this address.
-        Row {
-          width: panel.width
-          spacing: Style.space(8)
-
-          Text {
-            id: endpointLabel
-            anchors.verticalCenter: parent.verticalCenter
-            width: Style.space(78)
-            text: "Endpoint"
-            color: Qt.darker(root.foreground, 1.6)
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.body
-            textFormat: Text.PlainText
-          }
-
-          TextField {
-            id: endpointField
-            width: panel.width - endpointLabel.width - Style.space(8)
-            // Focus comes from the panel's focusTarget when the card maps; the
-            // field only has to handle the keys it owns.
-            selectByMouse: true
-            placeholderText: "host:port"
-            foreground: root.draftValid ? root.foreground : root.urgentColor
-            font.family: root.fontFamily
-            // Enter applies; losing focus does not, so clicking around the panel
-            // can never re-point a running proxy by accident.
-            onAccepted: root.applyAddress(text)
-            // Escape drops the draft: the proxy keeps running against the
-            // address it was given, and the field is re-seeded on the next open.
-            Keys.onEscapePressed: root.close()
-          }
+        Text {
+          id: headerGlyph
+          anchors.left: parent.left
+          anchors.verticalCenter: parent.verticalCenter
+          text: Model.GLYPH
+          color: root.stateColor
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.iconLarge
         }
 
         Text {
-          width: panel.width
-          visible: !root.draftValid || root.draftPending
-          text: !root.draftValid
-            ? "Enter an address as host:port \u2014 the switch enables it"
-            : "Press Enter to apply " + root.draftAddress + " to the running proxy"
-          color: !root.draftValid ? root.urgentColor : root.dimColor
+          id: headerTitle
+          anchors.left: headerGlyph.right
+          anchors.leftMargin: Style.space(6)
+          anchors.verticalCenter: parent.verticalCenter
+          text: "Proxy"
+          color: root.foreground
           font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
+          font.pixelSize: Style.font.title
+          font.bold: true
+        }
+
+        Text {
+          id: headerState
+          anchors.right: parent.right
+          anchors.verticalCenter: parent.verticalCenter
+          text: root.panelStateText
+          color: root.panelStateColor
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.body
+        }
+      }
+
+      PanelSeparator { foreground: root.foreground }
+
+      // The endpoint is the one thing the user edits here: type host:port,
+      // press Enter to apply it (and re-apply it to a running proxy), or just
+      // flip the switch below to enable/disable with this address. The panel
+      // opens with the field focused and its value selected, so the first
+      // keystroke after a network change is the new address.
+      Row {
+        width: panel.width
+        spacing: Style.space(8)
+
+        Text {
+          id: endpointLabel
+          anchors.verticalCenter: parent.verticalCenter
+          width: Style.space(78)
+          text: "Endpoint"
+          color: Qt.darker(root.foreground, 1.6)
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.body
           textFormat: Text.PlainText
-          wrapMode: Text.Wrap
         }
+
+        TextField {
+          id: endpointField
+          width: panel.width - endpointLabel.width - clearButton.width - Style.space(16)
+          placeholderText: "host:port"
+          foreground: root.draftInvalid ? root.urgentColor : root.foreground
+          font.family: root.fontFamily
+          // Enter applies; losing focus does not, so clicking around the panel
+          // can never re-point a running proxy by accident.
+          onAccepted: root.applyAddress(text)
+          Keys.onEscapePressed: root.close()
+        }
+
+        // The way out of a remembered endpoint. One click stops the system
+        // proxy and TUN, wipes the endpoint from every layer proxyctl writes
+        // (see the Layers list below, which goes blank as this runs) and clears
+        // the address this widget remembers — so the next boot starts from an
+        // empty field instead of the last network's endpoint.
+        Button {
+          id: clearButton
+          height: endpointField.height
+          text: "Clear"
+          tooltipText: "Stop the proxy and TUN, clear the endpoint from every layer (desktop, session env, browser flags, git, dev tools) and forget this address"
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          focusable: true
+          opacity: (root.busy || root.tunBusy || root.clearing) ? 0.55 : 1.0
+          onClicked: root.clearEndpoints()
+        }
+      }
+
+      Text {
+        width: panel.width
+        visible: root.endpointHintText !== ""
+        text: root.endpointHintText
+        color: root.draftInvalid ? root.urgentColor : root.dimColor
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        textFormat: Text.PlainText
+        wrapMode: Text.Wrap
+      }
+
+      InfoRow {
+        width: panel.width
+        label: "Health"
+        value: root.healthText
+        labelColor: root.foreground
+        valueColor: root.healthColor
+        fontFamily: root.fontFamily
+      }
+
+      InfoRow {
+        width: panel.width
+        label: "Exit IP"
+        value: root.exitIpText
+        labelColor: root.foreground
+        valueColor: root.proxied ? root.foreground : root.dimColor
+        fontFamily: root.fontFamily
+      }
+
+      InfoRow {
+        width: panel.width
+        visible: root.lastError !== ""
+        label: "Error"
+        value: root.lastError
+        labelColor: root.foreground
+        valueColor: root.urgentColor
+        fontFamily: root.fontFamily
+      }
+
+      // Confirmation for Clear, in the same shape as the error line: the panel
+      // has no window of its own to raise, so the result has to be stated here.
+      InfoRow {
+        width: panel.width
+        visible: root.notice !== ""
+        label: "Done"
+        value: root.notice
+        labelColor: root.foreground
+        valueColor: root.successColor
+        fontFamily: root.fontFamily
+      }
+
+      PanelSeparator { foreground: root.foreground }
+
+      // The one control that changes system state, and it lives in the panel.
+      Toggle {
+        width: panel.width
+        label: "System proxy"
+        description: root.tunRunning
+          ? "Not needed while TUN is on \u2014 every app is already routed"
+          : (root.proxyOn
+            ? "Enabled \u2014 browsers, terminals, git and dev tools use " + root.liveAddress
+            : "Disabled \u2014 everything connects directly")
+        checked: root.proxyOn
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        opacity: root.busy ? 0.55 : 1.0
+        onClicked: root.toggle()
+      }
+
+      // TUN mode: the skill's network-layer switch. It routes every app
+      // through the local mihomo using the endpoint above, so a wrong or dead
+      // upstream cuts the machine off — hence the explicit wording.
+      Toggle {
+        width: panel.width
+        label: "TUN mode"
+        description: root.tunRunning
+          ? "Running \u2014 every app routed at the network layer"
+          : "Stopped \u2014 verify the endpoint before enabling"
+        checked: root.tunRunning
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        opacity: root.tunBusy ? 0.55 : 1.0
+        onClicked: root.toggleTun()
+      }
+
+      PanelSeparator { foreground: root.foreground }
+
+      PanelSectionHeader {
+        text: "Layers"
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+      }
+
+      Repeater {
+        model: root.layerRows
 
         InfoRow {
           width: panel.width
-          label: "Health"
-          value: root.healthText
+          labelWidth: Style.space(104)
+          label: modelData.label
+          value: modelData.value
           labelColor: root.foreground
-          valueColor: root.healthColor
+          valueColor: modelData.ok ? root.foreground : root.dimColor
           fontFamily: root.fontFamily
         }
+      }
 
-        InfoRow {
-          width: panel.width
-          label: "Exit IP"
-          value: root.exitIpText
-          labelColor: root.foreground
-          valueColor: root.proxied ? root.foreground : root.dimColor
-          fontFamily: root.fontFamily
-        }
+      PanelSeparator { foreground: root.foreground }
 
-        InfoRow {
-          width: panel.width
-          visible: root.lastError !== ""
-          label: "Error"
-          value: root.lastError
-          labelColor: root.foreground
-          valueColor: root.urgentColor
-          fontFamily: root.fontFamily
-        }
+      Row {
+        width: panel.width
+        spacing: Style.space(8)
 
-        PanelSeparator { foreground: root.foreground }
-
-        // The one control that changes system state, and it lives in the panel.
-        Toggle {
-          width: panel.width
-          label: "System proxy"
-          description: root.tunRunning
-            ? "Not needed while TUN is on \u2014 every app is already routed"
-            : (root.proxyOn
-              ? "Enabled \u2014 browsers, terminals, git and dev tools use " + root.liveAddress
-              : "Disabled \u2014 everything connects directly")
-          checked: root.proxyOn
+        Button {
+          width: (panel.width - Style.space(8)) / 2
+          text: "Check"
+          iconText: "\uf021"
+          tooltipText: "Re-run the health and exit-IP probes"
           foreground: root.foreground
           fontFamily: root.fontFamily
-          opacity: root.busy ? 0.55 : 1.0
-          onClicked: root.toggle()
-        }
-
-        // TUN mode: the skill's network-layer switch. It routes every app
-        // through the local mihomo using the endpoint above, so a wrong or dead
-        // upstream cuts the machine off — hence the explicit wording.
-        Toggle {
-          width: panel.width
-          label: "TUN mode"
-          description: root.tunRunning
-            ? "Running \u2014 every app routed at the network layer"
-            : "Stopped \u2014 verify the endpoint before enabling"
-          checked: root.tunRunning
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          opacity: root.tunBusy ? 0.55 : 1.0
-          onClicked: root.toggleTun()
-        }
-
-        PanelSeparator { foreground: root.foreground }
-
-        PanelSectionHeader {
-          text: "Layers"
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-        }
-
-        Repeater {
-          model: root.layerRows
-
-          InfoRow {
-            width: panel.width
-            labelWidth: Style.space(104)
-            label: modelData.label
-            value: modelData.value
-            labelColor: root.foreground
-            valueColor: modelData.ok ? root.foreground : root.dimColor
-            fontFamily: root.fontFamily
+          focusable: true
+          onClicked: {
+            root.checkNow()
+            root.checkExitIp()
           }
         }
 
-        PanelSeparator { foreground: root.foreground }
-
-        Row {
-          width: panel.width
-          spacing: Style.space(8)
-
-          Button {
-            width: (panel.width - Style.space(8)) / 2
-            text: "Check"
-            iconText: "\uf021"
-            tooltipText: "Re-run the health and exit-IP probes"
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            focusable: true
-            onClicked: {
-              root.checkNow()
-              root.checkExitIp()
-            }
-          }
-
-          Button {
-            width: (panel.width - Style.space(8)) / 2
-            text: root.copied ? "Copied \u2713" : (root.copyError !== "" ? "Failed" : "Copy")
-            iconText: "\uf0c5"
-            tooltipText: "Copy a status block to the clipboard"
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            focusable: true
-            onClicked: root.copyStatus()
-          }
+        Button {
+          width: (panel.width - Style.space(8)) / 2
+          text: root.copied ? "Copied \u2713" : (root.copyError !== "" ? "Failed" : "Copy")
+          iconText: "\uf0c5"
+          tooltipText: "Copy a status block to the clipboard"
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          focusable: true
+          onClicked: root.copyStatus()
         }
       }
     }
