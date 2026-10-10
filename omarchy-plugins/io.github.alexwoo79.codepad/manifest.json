@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.alexwoo79.codepad",
+  "name": "codePad",
+  "version": "1.0.0",
+  "author": "alexwoo79",
+  "license": "MIT",
+  "description": "codePad in the bar: collect the files to typeset, open them in codePad, and export a printable A4 sheet to PDF, HTML or Word without leaving the shell.",
+  "kinds": ["bar-widget"],
+  "entryPoints": { "barWidget": "BarWidget.qml" },
+  "barWidget": {
+    "displayName": "codePad",
+    "description": "Click opens a panel: add the files to typeset, open them in codePad, or export them to PDF / HTML / DOCX in place. Exports run headless, so no window flashes while a sheet renders.",
+    "category": "Utility",
+    "defaultSection": "right",
+    "allowMultiple": false,
+    "aliases": ["codepad", "print-sheet", "paiban"],
+    "defaults": {
+      "binary": "",
+      "outputDir": "",
+      "offscreenExport": true
+    },
+    "schema": [
+      {
+        "key": "binary",
+        "type": "path",
+        "label": "codePad binary",
+        "description": "Leave empty to use whichever `codepad` the session finds on PATH. The AppImage install (~/.local/bin/codepad) is found the same way.",
+        "defaultValue": ""
+      },
+      {
+        "key": "outputDir",
+        "type": "path",
+        "label": "Export directory",
+        "description": "Where exports are written. Leave empty for the home directory; the panel's own field starts here and remembers what you set.",
+        "defaultValue": ""
+      },
+      {
+        "key": "offscreenExport",
+        "type": "boolean",
+        "label": "Headless export",
+        "description": "Run exports with QT_QPA_PLATFORM=offscreen so no codePad window flashes while the sheet renders. Turn off only if your build cannot export without a screen.",
+        "defaultValue": true
+      }
+    ]
+  }
+}

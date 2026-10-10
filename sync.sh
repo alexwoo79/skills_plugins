@@ -30,7 +30,7 @@ for version_dir in "$plugin_cache"/design-metrics-skills/*/; do
   rsync -a --delete --exclude '.venv' "$version_dir" "$repo/codex-plugins/design-metrics-skills/"
 done
 
-for plugin in io.github.alexwoo79.proxy; do
+for plugin in io.github.alexwoo79.proxy io.github.alexwoo79.codepad; do
   [ -d "$omarchy_plugins/$plugin" ] || continue
   rsync -a --delete "$omarchy_plugins/$plugin/" "$repo/omarchy-plugins/$plugin/"
 done

@@ -41,11 +41,17 @@ contact the author first: [@alexwoo79](https://github.com/alexwoo79).**
 | Plugin | What it does |
 | --- | --- |
 | `io.github.alexwoo79.proxy/` | Bar widget: proxy state in one line (glyph + `off` / `on 87ms` / `on !`) with a details panel — editable endpoint, system proxy and TUN switches, live health and exit IP, and the state of every layer `proxyctl` writes |
+| `io.github.alexwoo79.codepad/` | Bar widget: the codePad print-sheet builder reachable from the bar — queue the files to typeset, open them in the real codePad window, or export PDF / HTML / DOCX in place. Exports run headless, so no window flashes while a sheet renders |
 
 The proxy skill and the proxy widget both drive
 [`proxyctl`](https://github.com/alexwoo79/go_coding/tree/main/proxyctl), which
 owns the proxy state for the desktop session, the systemd user session, the
 browser flags, git and the dev tools.
+
+The codePad widget drives the `codepad` binary — the print-sheet builder that
+typesets Markdown, source code or plain text into a printable A4 sheet. It only
+launches and exports; the preview, the themes and the print dialog stay in
+codePad's own window, because QML cannot host another process's window.
 
 ### Install proxyctl (required by both proxy pieces)
 
@@ -101,6 +107,7 @@ marketplace at the plugin source again, or by copying it back into
 | `design-metrics-skills` | Python plus `engine/requirements.txt` |
 | `markdown-ppt` | the `markdown-ppt` CLI engine |
 | `omarchy-proxyctl`, proxy plugin | `proxyctl` on PATH or `~/.local/bin/proxyctl` |
+| codePad widget | the `codepad` binary — on `PATH`, or set `binary` in the widget's entry in `~/.config/omarchy/shell.json` (leave it empty to resolve `codepad` through `PATH`) |
 
 ## Install the Omarchy plugin
 
@@ -112,11 +119,19 @@ cd skills_plugins
 
 ./omarchy-plugins/io.github.alexwoo79.proxy/install.sh              # right section
 ./omarchy-plugins/io.github.alexwoo79.proxy/install.sh --section center
+./omarchy-plugins/io.github.alexwoo79.codepad/install.sh            # right section
 ```
 
 `install.sh` copies the folder into `~/.config/omarchy/plugins/`, asks the
 running shell to rescan, enables the widget and prints the result. Re-running
 it just refreshes the installed copy.
+
+Each plugin has its own `Model.js` unit test, runnable without Omarchy:
+
+```sh
+node omarchy-plugins/io.github.alexwoo79.proxy/test-model.js
+node omarchy-plugins/io.github.alexwoo79.codepad/test-model.js
+```
 
 By hand it is three steps, and the middle one is the step that is easy to miss:
 
