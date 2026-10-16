@@ -9,7 +9,7 @@
 | `floorplan-walls.json` | 同上 | 墙中心线 + 厚度的 `plan.json`，可接 `wall_plan.py` 继续改图 |
 | `floorplan2.dxf` | 彩色家装平面图（2400×1808，带尺寸链） | 已标定 **0.1335 px/mm（即 1px≈7.5mm）**，单位为毫米：61 段墙（`A-WALL`）+ 1546 条清理后的线work（`A-TRACE`）。尺寸链逐段复核误差 +1/−7/+5/−7mm（全程 0.19%） |
 | `floorplan2-walls.json` | 同上 | 毫米制的墙中心线 + 厚度（实测 151/267mm，该图为效果图、墙厚不按比例，未做吸附） |
-| `deepseek-logo.svg` / `deepseek-logo.dxf` | DeepSeek 标识位图（461×465） | 轮廓描摹：9 个外轮廓 + 9 个内孔，IoU 0.982、面积比 0.997，尺寸 100.1×103.6mm；DXF 含 18 条多段线与 9 个带岛填充 |
+| `deepseek-logo.svg` / `deepseek-logo.dxf`（本机文件，**不入库**） | DeepSeek 标识位图（461×465） | 轮廓描摹：9 个外轮廓 + 9 个内孔，IoU 0.982、面积比 0.997，尺寸 100.1×103.6mm；DXF 含 18 条多段线与 9 个带岛填充。第三方标识，已加入 `.gitignore`，按下面命令可在本机复现 |
 
 ## 复现
 
@@ -28,5 +28,6 @@ python3 cad-skill/scripts/image_to_vector.py <标识.png> \
 原始位图未纳入仓库（体积与来源原因），上表已记录每份产物的尺寸与参数，按上面的命令
 用同一张图可复现。
 
-**注意**：`deepseek-logo.*` 是第三方标识的像素描摹结果，仅供个人测试参照；
-平面图为本机示例，如需移出公开仓库可直接删除这些文件。
+**注意**：`deepseek-logo.*` 是第三方标识的像素描摹结果，仅供个人测试参照，已在
+`.gitignore` 中排除（本机文件仍在 `out/` 下）。平面图产物入库为本机示例，
+如需一并移出公开仓库可执行 `git rm -r --cached out`。

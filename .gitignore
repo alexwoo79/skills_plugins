@@ -2,3 +2,7 @@ __pycache__/
 *.pyc
 .venv/
 .DS_Store
+
+# 第三方标识的描摹产物：只在本机留作参照，不入库（可用 out/README.md 里的命令复现）
+out/deepseek-logo.svg
+out/deepseek-logo.dxf
