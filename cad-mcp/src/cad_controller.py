@@ -7,6 +7,7 @@ import json
 import threading
 import queue
 import concurrent.futures
+import uuid
 from contextlib import contextmanager
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -1506,3 +1507,118 @@ class CADController:
         except Exception as e:
             logger.error(f"执行命令失败: {str(e)}")
             return False
+
+    # 一次脚本的最大体积：防止把超大脚本灌进CAD把图形卡死
+    MAX_SCRIPT_BYTES = 4 * 1024 * 1024
+    # 完成哨兵用的系统变量（AutoCAD 与国产CAD都有的 USERS1）
+    SCRIPT_SENTINEL_VAR = "USERS1"
+
+    def run_script(self, script: str, file_path: str = None, encoding: str = "utf-8-sig",
+                   timeout: float = 180.0, sentinel: bool = True) -> Dict[str, Any]:
+        """把一段CAD命令脚本写到本机文件，整批执行一次（批量落图）
+
+        逐图元调用时每个实体都要走一次跨进程COM往返；整段脚本只用一次
+        SendCommand，CAD在自己进程内把命令跑完——同一个几何量级快一个量级。
+        脚本内容由调用方提供（例如 cad-skill/scripts/plan_to_scr.py 生成的 .scr）。
+
+        SendCommand 是异步的：sentinel=True 时在脚本末尾追加一行把
+        USERS1 设为随机令牌，然后轮询该变量确认整段脚本真的执行完；
+        脚本里若显式改过 USERS1 会被令牌覆盖，CAD不支持该变量时
+        退化为按 command_delay 等待并在返回值里标记 completed=False。
+
+        注意：脚本可包含任意CAD命令（含 ERASE 等破坏性命令），调用方负责内容安全。
+        """
+        if not self.is_running():
+            return {"success": False, "message": "CAD未运行", "error": "CAD未运行"}
+        if not script or not script.strip():
+            return {"success": False, "message": "脚本内容为空", "error": "脚本内容为空"}
+
+        payload = script.replace("\r\n", "\n").replace("\r", "\n")
+        token = uuid.uuid4().hex
+        if sentinel:
+            payload = payload.rstrip("\n") + f"\n{self.SCRIPT_SENTINEL_VAR}\n{token}\n"
+        else:
+            payload = payload.rstrip("\n") + "\n"
+
+        try:
+            raw = payload.encode(encoding)
+        except (LookupError, UnicodeEncodeError) as e:
+            return {"success": False, "message": f"脚本内容无法用 {encoding} 编码",
+                    "error": str(e)}
+        if len(raw) > self.MAX_SCRIPT_BYTES:
+            return {"success": False,
+                    "message": f"脚本过大（{len(raw)} 字节，上限 {self.MAX_SCRIPT_BYTES}）",
+                    "error": "script too large"}
+
+        if file_path:
+            path = os.path.abspath(file_path)
+        else:
+            output_dir = os.path.abspath(config.get("output", {}).get("directory", "./output"))
+            path = os.path.join(output_dir, f"cad_script_{time.strftime('%Y%m%d_%H%M%S')}.scr")
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            # newline="\r\n"：.scr 需要CRLF，CAD按行读命令
+            with open(path, "w", encoding=encoding, newline="\r\n") as handle:
+                handle.write(payload)
+        except OSError as e:
+            return {"success": False, "message": f"写入脚本文件失败: {path}", "error": str(e)}
+
+        def entity_count():
+            try:
+                return self._call(getattr, self._ms(), "Count")
+            except Exception:
+                return None
+
+        before = entity_count()
+        started = time.time()
+        try:
+            # 路径可能含空格，加引号交给CAD解析
+            self._call_attr(self.doc, "SendCommand", f'_.SCRIPT "{path}"\n')
+        except Exception as e:
+            logger.error(f"提交脚本失败: {str(e)}")
+            return {"success": False, "message": "提交脚本执行失败", "script_path": path,
+                    "error": str(e)}
+
+        completed = False
+        if sentinel:
+            deadline = started + max(float(timeout), 1.0)
+            while time.time() < deadline:
+                try:
+                    # 注意用 _call_attr：_call(getattr, doc, "GetVariable", name) 会被
+                    # getattr 把 name 当成默认值，永远拿不到变量值
+                    current = self._call_attr(self.doc, "GetVariable", self.SCRIPT_SENTINEL_VAR)
+                except Exception:
+                    current = None
+                if isinstance(current, str) and current.strip() == token:
+                    completed = True
+                    break
+                time.sleep(0.2)
+        else:
+            # 没有哨兵时只能按配置的命令间隔粗等
+            time.sleep(self.command_delay)
+            completed = True
+
+        after = entity_count()
+        elapsed = round(time.time() - started, 3)
+        created = (after - before) if (before is not None and after is not None) else None
+        if completed:
+            message = f"脚本已执行完成（{len(payload.splitlines())} 行，用时 {elapsed}s）"
+        else:
+            message = (f"脚本已提交，但 {timeout}s 内未确认执行结束"
+                       f"（CAD可能仍在校验命令，或该CAD不支持 {self.SCRIPT_SENTINEL_VAR}）")
+        if created is not None:
+            message += f"，模型空间实体数 {before} → {after}"
+        logger.info(f"批量脚本执行: {message}（{path}）")
+        return {
+            "success": True,
+            "message": message,
+            "script_path": path,
+            "lines": len(payload.splitlines()),
+            "bytes": len(raw),
+            "completed": completed,
+            "elapsed": elapsed,
+            "entities_before": before,
+            "entities_after": after,
+            "entities_created": created,
+            "error": None,
+        }

@@ -41,6 +41,7 @@ CAD-MCP 只会基础图元（线/圆/弧/多段线/矩形/文字/填充/标注�
 编辑：`erase_entity` `move_entity` `rotate_entity` `scale_entity` `copy_entity` `mirror_entity` `offset_entity` `array_linear_entity` `array_polar_entity` `undo` `redo`
 图层与图纸：`create_layer` `set_current_layer` `new_drawing` `open_drawing` `close_drawing` `save_drawing`
 图块与逃生舱：`create_block` `insert_block` `list_blocks` `send_command`
+批量落图（本地扩展）：`draw_script`
 
 坐标一律 `[x, y]`（可带 z）；绘图类工具返回实体句柄，改图先用 `list_entities` 拿 handle。
 
@@ -83,7 +84,7 @@ python3 scripts/wall_plan.py plan.json > calls.json
 python3 scripts/plan_to_scr.py calls.json --out plan.scr --dimtxt 250
 ```
 
-把 `plan.scr` 拷到装 CAD 的机器，用 CAD 里的 `SCRIPT` 命令执行，或经 MCP 一次提交 `send_command("_.SCRIPT C:\\path\\plan.scr")`。脚本默认整批一个撤销组、末尾 `ZOOM E`；提交后先 `list_entities` 核对实体数再 `screenshot`，因为脚本执行是异步的。
+落图首选 `draw_script`（本地扩展工具）：把脚本全文整段传进去，服务端落盘后交给 CAD 一次执行完，并回报 `completed` 与实体数前后差值——不用手工把文件拷到 CAD 机器。脚本默认整批一个撤销组、末尾 `ZOOM E`；若 `completed=false`（该 CAD 不支持哨兵变量）或想再核对，就看 `entities_after` 或 `list_entities`，再 `screenshot`，因为脚本执行是异步的。次选是把 `plan.scr` 拷过去在 CAD 里跑 `SCRIPT`，或 `send_command("_.SCRIPT C:\\path\\plan.scr")`。
 
 细节、标注和填充再逐条用 MCP 工具补（`draw_hatch` 无法脚本化）。详见 `references/performance.md`。
 

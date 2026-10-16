@@ -28,10 +28,15 @@ python3 scripts/wall_plan.py plan.json > calls.json
 python3 scripts/plan_to_scr.py calls.json --out plan.scr --dimtxt 250
 ```
 
-然后把 `plan.scr` 拷到装 CAD 的 Windows 机器上，二选一执行：
+然后二选一落到 CAD 上——**首选 A**，服务端就在 CAD 那台机器上时不用拷任何文件：
 
-- 在 CAD 里执行 `SCRIPT`，选 `plan.scr`；
-- 或者经 MCP 一次性提交：`send_command("_.SCRIPT C:\\path\\plan.scr")`。
+- **A. `draw_script`**（本地扩展工具）：把脚本全文直接传进去，服务端落盘 + 一次执行，并回报 `completed` 与实体数前后差值：
+
+  ```text
+  draw_script(script=<plan.scr 的全文>, encoding="utf-8-sig")
+  ```
+
+- **B. 手工执行**：把 `plan.scr` 拷到 CAD 机器上，在 CAD 里执行 `SCRIPT` 选文件，或 `send_command("_.SCRIPT C:\\path\\plan.scr")`。
 
 脚本默认用 `UNDO BEGIN/END` 把整批包成一个撤销组：画错了 `undo` 一次就全撤回；脚本中途失败会留下未闭合的撤销组，在命令行执行一次 `UNDO END` 收尾即可（`--no-undo-group` 可关闭）。
 

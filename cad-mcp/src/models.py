@@ -83,3 +83,18 @@ class ListBlocksResult(BaseModel):
     success: bool = Field(description="查询是否成功")
     message: str = Field(description="结果说明")
     blocks: List[BlockInfo] = Field(default_factory=list, description="图块列表")
+
+
+class ScriptResult(BaseModel):
+    """批量脚本执行结果（本地扩展，见 PATCHES.md）"""
+    success: bool = Field(description="脚本是否已提交执行")
+    message: str = Field(description="人类可读的结果说明")
+    script_path: str = Field(default="", description="脚本落盘的绝对路径")
+    lines: int = Field(default=0, description="脚本行数")
+    bytes: int = Field(default=0, description="脚本字节数（按输出编码）")
+    completed: bool = Field(default=False, description="是否确认脚本已执行结束（USERS1 哨兵）")
+    elapsed: float = Field(default=0.0, description="从提交到返回的秒数")
+    entities_before: Optional[int] = Field(default=None, description="执行前模型空间实体数")
+    entities_after: Optional[int] = Field(default=None, description="执行后模型空间实体数")
+    entities_created: Optional[int] = Field(default=None, description="新增实体数（执行前后差值）")
+    error: Optional[str] = Field(default=None, description="失败时的错误信息")

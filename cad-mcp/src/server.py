@@ -17,14 +17,16 @@ if __package__:
     from .cad_controller import CADController
     from .config import get_config
     from .models import (ToolResult, ListEntitiesResult,
-                         ListLayersResult, EntityPropertiesResult, ListBlocksResult)
+                         ListLayersResult, EntityPropertiesResult, ListBlocksResult,
+                         ScriptResult)
     from .nlp_processor import NLPProcessor
 else:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from cad_controller import CADController
     from config import get_config
     from models import (ToolResult, ListEntitiesResult,
-                        ListLayersResult, EntityPropertiesResult, ListBlocksResult)
+                        ListLayersResult, EntityPropertiesResult, ListBlocksResult,
+                        ScriptResult)
     from nlp_processor import NLPProcessor
 
 from mcp.server.fastmcp import FastMCP, Context
@@ -126,6 +128,7 @@ PROMPT_TEMPLATE = """
 "new_drawing" / "open_drawing" / "close_drawing" / "save_drawing": 图纸管理
 "create_block" / "insert_block" / "list_blocks": 图块操作
 "send_command": 直通CAD命令行执行任意命令
+"draw_script": 整批执行一段CAD脚本（.scr），一次调用画完大量图元（本地扩展）
 
 遗留接口：
 "process_command": 处理自然语言命令并转换为CAD操作（推荐优先使用上述结构化工具）
@@ -144,6 +147,8 @@ SERVER_INSTRUCTIONS = """CAD MCP 服务器：通过 MCP 工具控制 Windows 上
 - 颜色参数支持 ACI 索引(1-256)或中英文颜色名称，不指定则保持随层(ByLayer)
 - 绘图后建议用 screenshot 截图确认效果，用 list_entities 查询图纸实际内容
 - send_command 可直通 CAD 命令行，执行任何未封装为工具的 CAD 命令
+- 图元多时优先用 draw_script 提交整段 .scr 脚本：每个实体一条工具调用要付一次跨进程 COM 往返，
+  整段脚本对 CAD 只是一次调用，快一个量级；脚本末尾会写入 USERS1 令牌以确认执行完成
 """
 
 # ==================== 参数类型（保留原版 schema 的坐标约束） ====================
@@ -597,6 +602,19 @@ class CADService:
                 "message": f"处理命令时出错: {str(e)}"
             }
 
+    def run_script(self, script: str, file_path=None, encoding: str = "utf-8-sig",
+                   timeout: float = 180.0, sentinel: bool = True) -> Dict[str, Any]:
+        """批量执行一段CAD脚本（本地扩展，见 PATCHES.md）
+
+        脚本写到本机文件后由CAD一次执行完，避免逐图元调用的跨进程往返。
+        """
+        if not self.controller.is_running():
+            self.start_cad()
+        result = self.controller.run_script(script, file_path, encoding, timeout, sentinel)
+        self.drawing_state["last_command"] = f"SCRIPT {result.get('script_path', '')}".strip()
+        self.drawing_state["last_result"] = result.get("message", "")
+        return result
+
 
 # ==================== 服务实例与通用工具函数 ====================
 
@@ -1019,6 +1037,40 @@ async def send_command(ctx: Context, command: str) -> ToolResult:
         return ToolResult(success=False, message="CAD未运行且自动启动失败")
     ok = await com(cad_service.controller.send_command, command)
     return ToolResult(success=ok, message=f"命令已提交: {command}" if ok else "命令执行失败")
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
+async def draw_script(ctx: Context, script: str, file_path: Optional[str] = None,
+                      encoding: str = "utf-8-sig", timeout: float = 180.0,
+                      sentinel: bool = True) -> ScriptResult:
+    """整批执行一段CAD脚本（.scr），一次调用画完大量图元（本地扩展）
+
+    面向批量落图：把整段CAD脚本内容传进来（例如 cad-skill 的 plan_to_scr.py
+    生成的脚本），服务端写到本机 .scr 文件后由CAD一次执行完。逐图元调用时
+    每个实体都要走一次跨进程COM往返，整段脚本对CAD只是"一条命令"，
+    同一个几何量级快一个量级。
+
+    参数：
+    - script: 脚本全文（每行一条命令，坐标写成 1234,5678）
+    - file_path: 脚本落盘的绝对路径；省略则写到 config.json 的 output 目录
+    - encoding: 默认 utf-8-sig；中文文字在CAD里乱码时改用 gbk
+    - timeout: 等待确认执行完成的秒数（只用于确认，不会中断脚本）
+    - sentinel: 默认在脚本末尾追加 USERS1 令牌，用来确认脚本真的跑完
+
+    注意：脚本可包含任意CAD命令（含 ERASE 等破坏性命令），执行前请确认内容。
+    """
+    if not await _ensure_running(ctx):
+        return ScriptResult(success=False, message="CAD未运行且自动启动失败",
+                            error="CAD未运行且自动启动失败")
+    result = await com(cad_service.run_script, script, file_path, encoding, timeout, sentinel)
+    return ScriptResult(**{
+        key: result.get(key, default)
+        for key, default in (("success", False), ("message", ""), ("script_path", ""),
+                             ("lines", 0), ("bytes", 0), ("completed", False),
+                             ("elapsed", 0.0), ("entities_before", None),
+                             ("entities_after", None), ("entities_created", None),
+                             ("error", None))
+    })
 
 
 # ---------- 图块操作 ----------

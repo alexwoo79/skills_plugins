@@ -1,6 +1,9 @@
-# CAD-MCP 工具清单（v2.0，35 个）
+# CAD-MCP 工具清单（上游 v2.0 的 35 个 + 本地扩展 1 个）
 
 依据仓库 `daobataotie/CAD-MCP` 的 `src/server.py`。参数名、默认值以本页为准；不确定时也可以先 `codex mcp list` 确认服务在，再用客户端看到的 schema 复核。
+
+本地部署的服务端是仓库里的 `cad-mcp/` 副本（相对上游的改动见 `cad-mcp/PATCHES.md`），
+因此除了下面 35 个上游工具，还有 1 个本地扩展工具 `draw_script`。
 
 通用约定：
 
@@ -75,6 +78,20 @@
 | `send_command` | `command` | 直通 CAD 命令行执行任意命令；建议 `"_.ZOOM E"` 这种 `_.` 前缀写英文命令，兼容中文版 CAD |
 | `process_command` | `command` | 遗留自然语言接口（关键词/正则，能力有限），优先用上面的结构化工具 |
 
+## 批量落图（本地扩展）
+
+| 工具 | 参数 | 说明 |
+| --- | --- | --- |
+| `draw_script` | `script`, `file_path?`, `encoding="utf-8-sig"`, `timeout=180`, `sentinel=True` | 整段 CAD 脚本（`.scr` 文本）一次执行：服务端落盘到本机文件后交给 CAD 跑完。返回 `script_path`/`completed`/`elapsed`/`entities_before`/`entities_after`/`entities_created` |
+
+用法要点：
+
+- **图元超过几十个就用它**，别逐条调绘图工具：逐图元是每个实体一次跨进程 COM 往返，整段脚本对 CAD 只是一次调用。
+- 脚本内容由 `scripts/plan_to_scr.py` 生成后直接整段传进来，不必再手工拷文件到 CAD 机器。
+- `completed` 靠脚本末尾的 `USERS1` 哨兵确认（`SendCommand` 本身是异步的）；CAD 不支持该变量时返回 `completed=false`，别当成失败，用 `entities_after` 或 `list_entities` 核对。
+- 中文文字在 CAD 里乱码时改 `encoding="gbk"`。
+- 脚本可包含任意 CAD 命令（含 `ERASE`），工具带 `destructiveHint`，执行前确认内容。
+
 ## 其他接口
 
 - 资源 `drawing://current`：当前图纸状态（会话记录 + CAD 文档实时统计）。
@@ -83,3 +100,9 @@
 ## 能力边界
 
 CAD-MCP 提供的是图元级能力：没有墙体/门窗/家具/轴网这类专业对象，也没有“拉伸并联动标注”的工具。改图靠按新参数重画相关图元，或用 `move_entity`/`offset_entity`/`erase_entity` + 重画组合完成。
+
+## 本地副本的相对差异（会改变调用成本，不改调用方式）
+
+- **图层解析与 `ModelSpace` 带缓存**：传 `layer` 的语义没变（自动建层、不切当前层），但只有第一次会枚举图层；之后每条实体固定 4 次 COM 往返（上游是 `6 + 2×图层数`）。换文档后自动失效；如果你在 CAD 界面里删掉/改名了某图层，下一次写图层会自动清缓存重解析，不需要手动干预。
+- **新增 `draw_script`**：见上一节。
+- 依赖与安装走本地副本，**不要从网上拉取上游代码**。
