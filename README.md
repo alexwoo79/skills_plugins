@@ -48,6 +48,13 @@ when a rewrite is — or is not — worth it. Copy it into `~/.codex/skills/` li
 skills; unlike everything else in this repo it targets **Windows** (CAD-MCP drives
 AutoCAD / GstarCAD / ZWCAD over COM).
 
+It also works **without MCP**: the COM driver is inlined at `cad-skill/vendor/cad_core.py`
+and `scripts/cad_direct.py` exposes it as a CLI (`layers`, `draw --calls`, `script --file`,
+`shot`, `save`, handle-based edits …), so a single skill folder is enough when Codex runs
+on the same Windows box as CAD. `references/direct-cli.md` covers that path, including why
+cross-machine use still wants the MCP server. 13 offline tests
+(`python3 cad-skill/tests/test_cad_core.py`) drive the CLI end to end against fake COM.
+
 ### `cad-mcp/` — local copy of the CAD-MCP server (patched)
 
 Vendored copy of [CAD-MCP](https://github.com/daobataotie/CAD-MCP) v2.0 (MIT, `LICENSE`

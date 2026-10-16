@@ -33,6 +33,7 @@ CAD-MCP 只会基础图元（线/圆/弧/多段线/矩形/文字/填充/标注�
 | 直墙带洞口（门/窗）的坐标容易算错 | 先跑 `scripts/wall_plan.py` 生成调用序列 |
 | 图元多、嫌慢，或要判断该不该改 CAD-MCP 源码 | `references/performance.md` |
 | 要装/改服务端本身 | 本仓库 `cad-mcp/` 本地副本（勿联网拉上游代码），改动见 `cad-mcp/PATCHES.md` |
+| 不想用 MCP，直接用程序调用 CAD | `references/direct-cli.md` + `scripts/cad_direct.py` |
 
 ## 工具速查
 
@@ -87,6 +88,22 @@ python3 scripts/plan_to_scr.py calls.json --out plan.scr --dimtxt 250
 落图首选 `draw_script`（本地扩展工具）：把脚本全文整段传进去，服务端落盘后交给 CAD 一次执行完，并回报 `completed` 与实体数前后差值——不用手工把文件拷到 CAD 机器。脚本默认整批一个撤销组、末尾 `ZOOM E`；若 `completed=false`（该 CAD 不支持哨兵变量）或想再核对，就看 `entities_after` 或 `list_entities`，再 `screenshot`，因为脚本执行是异步的。次选是把 `plan.scr` 拷过去在 CAD 里跑 `SCRIPT`，或 `send_command("_.SCRIPT C:\\path\\plan.scr")`。
 
 细节、标注和填充再逐条用 MCP 工具补（`draw_hatch` 无法脚本化）。详见 `references/performance.md`。
+
+## 两条调用通道，同一套绘图逻辑
+
+| 通道 | 入口 | 前置 |
+| --- | --- | --- |
+| MCP | `draw_line` / `draw_script` 等工具 | 注册 `cad-mcp` 服务端 |
+| 直接调用 | `scripts/cad_direct.py <子命令>` | 只要 pywin32；CAD 与 Codex 同机同会话 |
+
+直接调用的命令：`layers` `stats` `entities` `props` `draw --calls` `script --file`
+`shot --out` `save --path` `open` `new` `zoom` `send` `undo` `redo` `erase` `move`
+`copy` `offset` `mirror` `rotate` `scale`；全部输出一个 JSON 到 stdout，退出码
+0 成功 / 1 CAD 失败 / 2 参数错误。跨机（Codex 不在 Windows 上）请走 MCP，
+原因见 `references/direct-cli.md`。
+
+`draw --calls` 直接吃 `wall_plan.py` 的输出，所以几何前端在两条通道上完全共用：
+先用 `--dry-run` 校验，再真画。
 
 ## 修改与纠错
 

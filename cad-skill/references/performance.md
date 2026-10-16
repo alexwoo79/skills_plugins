@@ -38,6 +38,13 @@ python3 scripts/plan_to_scr.py calls.json --out plan.scr --dimtxt 250
 
 - **B. 手工执行**：把 `plan.scr` 拷到 CAD 机器上，在 CAD 里执行 `SCRIPT` 选文件，或 `send_command("_.SCRIPT C:\\path\\plan.scr")`。
 
+走直接调用通道（不用 MCP）时对应命令是：
+
+```bash
+python3 scripts/cad_direct.py script --file plan.scr    # 等价 draw_script
+python3 scripts/cad_direct.py draw --calls calls.json   # 等价逐图元调用
+```
+
 脚本默认用 `UNDO BEGIN/END` 把整批包成一个撤销组：画错了 `undo` 一次就全撤回；脚本中途失败会留下未闭合的撤销组，在命令行执行一次 `UNDO END` 收尾即可（`--no-undo-group` 可关闭）。
 
 ## 注意

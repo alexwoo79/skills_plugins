@@ -5,6 +5,9 @@
 本地部署的服务端是仓库里的 `cad-mcp/` 副本（相对上游的改动见 `cad-mcp/PATCHES.md`），
 因此除了下面 35 个上游工具，还有 1 个本地扩展工具 `draw_script`。
 
+不想用 MCP 的话看 `references/direct-cli.md`：同样的能力由
+`scripts/cad_direct.py` 以命令行提供（几何前端与图层规范完全共用）。
+
 通用约定：
 
 - `Point = [x, y]` 或 `[x, y, z]`；`Points` 至少 2 个点；`HatchPoints` 至少 3 个点。

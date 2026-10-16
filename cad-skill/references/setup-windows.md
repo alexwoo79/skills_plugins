@@ -9,6 +9,9 @@ CAD-MCP 依赖 Windows COM（pywin32）控制本机 CAD，只在 Windows 上运�
 - Python 3.10+
 - Codex CLI（或支持同一份 `config.toml` 的 Codex 客户端）
 
+两种装法：**A. 只装 skill，直接调用**（不需要 MCP 服务端与 `config.toml`，
+见 `references/direct-cli.md`）；**B. skill + MCP 服务端**（本节余下内容）。
+
 ## 安装 CAD-MCP（用本地副本，不要联网拉代码）
 
 服务端源码就在本仓库的 `cad-mcp/`（与 `cad-skill/` 同级），是 CAD-MCP v2.0 的本地副本，
