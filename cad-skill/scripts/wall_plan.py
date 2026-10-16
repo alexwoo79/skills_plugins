@@ -228,7 +228,57 @@ def plan_wall(wall: Dict[str, Any], where: str, layers: Dict[str, str],
                     layer=layers["window"],
                 ))
 
-    return {"wall": wall_calls, "door": door_calls, "window": window_calls}
+    return {
+        "wall": wall_calls,
+        "door": door_calls,
+        "window": window_calls,
+        # 供跨墙检查使用（不参与输出）
+        "meta": {
+            "id": wall.get("id"),
+            "origin": a,
+            "direction": [ux, uy],
+            "length": length,
+            "thickness": thickness,
+            "openings": openings,
+        },
+    }
+
+
+def check_crossings(metas: List[Dict[str, Any]], warnings: List[str]) -> None:
+    """检查洞口离交叉墙太近的情况（会画出难看的门垛，甚至被墙切断）
+
+    两墙交叉处，洞口边缘到交叉墙中心线至少要留 两墙半厚之和 的净距，
+    否则门/窗紧贴墙角：CAD 里是合法几何，制图上属于错误做法。
+    """
+    for meta in metas:
+        ax, ay = meta["origin"]
+        ux, uy = meta["direction"]
+        length, thickness = meta["length"], meta["thickness"]
+        label = meta["id"] or "墙"
+        for op in meta["openings"]:
+            start, end = op["start"], op["end"]
+            for other in metas:
+                if other is meta:
+                    continue
+                if abs(other["direction"][0] * ux + other["direction"][1] * uy) > 0.99:
+                    continue  # 平行墙不构成洞口阻挡
+                vx, vy = other["direction"]
+                det = ux * vy - uy * vx
+                if abs(det) < 1e-9:
+                    continue
+                dx, dy = other["origin"][0] - ax, other["origin"][1] - ay
+                at = (dx * vy - dy * vx) / det
+                cross = (dx * uy - dy * ux) / det
+                if not (0 <= at <= length and 0 <= cross <= other["length"]):
+                    continue
+                clearance = (thickness + other["thickness"]) / 2
+                if start - clearance < at < end + clearance:
+                    gap = min(abs(at - start), abs(at - end))
+                    warnings.append(
+                        "%s 上 %s 洞口 %.0f~%.0f 距交叉墙 %s 中心线仅 %.0fmm"
+                        "（建议至少 %.0fmm）" %
+                        (label, op["kind"], start, end, other["id"] or "墙", gap, clearance)
+                    )
 
 
 def build_plan(spec: Dict[str, Any], layers: Dict[str, str], extend_ends: bool = True,
@@ -240,6 +290,7 @@ def build_plan(spec: Dict[str, Any], layers: Dict[str, str], extend_ends: bool =
         raise SpecError("输入需要非空的 walls 数组")
 
     warnings: List[str] = []
+    metas: List[Dict[str, Any]] = []
     buckets: Dict[str, List[Dict[str, Any]]] = {"wall": [], "door": [], "window": []}
     opening_count = 0
 
@@ -261,10 +312,14 @@ def build_plan(spec: Dict[str, Any], layers: Dict[str, str], extend_ends: bool =
             wall["openings"] = scaled
 
         result = plan_wall(wall, "walls[%d]" % i, layers, extend_ends, warnings)
+        metas.append(result.pop("meta"))
         for key, calls in result.items():
             if calls:
                 buckets[key].extend(calls)
         opening_count += len(wall.get("openings") or [])
+
+    # 跨墙检查：洞口贴墙角是制图错误（几何合法但画出来难用），逐条告警
+    check_crossings(metas, warnings)
 
     phases = [
         {"key": "wall", "name": "1. 墙体（%s）" % layers["wall"], "calls": buckets["wall"]},

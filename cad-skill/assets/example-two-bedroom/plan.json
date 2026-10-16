@@ -1,0 +1,75 @@
+{
+  "_comment": "两居室示意（约 96㎡ 轴线面积，单位 mm）。这是「已确认方案」的示例：真实项目要先让用户确认房间尺寸与位置，再落图。H1 在 y=4200 分南北两带；V1/V2 分北侧三间房；V3 分南侧客厅与厨房。",
+  "walls": [
+    {
+      "id": "S-外墙-南",
+      "from": [0, 0],
+      "to": [12000, 0],
+      "thickness": 240,
+      "openings": [
+        {"kind": "door", "width": 1000, "center": 1500, "hinge": "start", "swing": "positive"},
+        {"kind": "window", "width": 2400, "center": 3600},
+        {"kind": "window", "width": 1200, "center": 10500}
+      ]
+    },
+    {
+      "id": "N-外墙-北",
+      "from": [0, 8000],
+      "to": [12000, 8000],
+      "thickness": 240,
+      "openings": [
+        {"kind": "window", "width": 1800, "center": 2300},
+        {"kind": "window", "width": 600, "center": 5600},
+        {"kind": "window", "width": 1500, "center": 9800}
+      ]
+    },
+    {
+      "id": "W-外墙-西",
+      "from": [0, 0],
+      "to": [0, 8000],
+      "thickness": 240,
+      "openings": []
+    },
+    {
+      "id": "E-外墙-东",
+      "from": [12000, 0],
+      "to": [12000, 8000],
+      "thickness": 240,
+      "openings": []
+    },
+    {
+      "id": "H1-内墙-南北分带",
+      "from": [0, 4200],
+      "to": [12000, 4200],
+      "thickness": 200,
+      "openings": [
+        {"kind": "door", "width": 900, "center": 2300, "hinge": "start", "swing": "positive"},
+        {"kind": "door", "width": 800, "center": 5600, "hinge": "end", "swing": "positive"},
+        {"kind": "door", "width": 900, "center": 7400, "hinge": "start", "swing": "positive"}
+      ]
+    },
+    {
+      "id": "V1-内墙-主卧卫生间",
+      "from": [4600, 4200],
+      "to": [4600, 8000],
+      "thickness": 200,
+      "openings": []
+    },
+    {
+      "id": "V2-内墙-卫生间次卧",
+      "from": [6600, 4200],
+      "to": [6600, 8000],
+      "thickness": 200,
+      "openings": []
+    },
+    {
+      "id": "V3-内墙-客厅厨房",
+      "from": [8600, 0],
+      "to": [8600, 4200],
+      "thickness": 200,
+      "openings": [
+        {"kind": "door", "width": 800, "center": 2100, "hinge": "start", "swing": "negative"}
+      ]
+    }
+  ]
+}

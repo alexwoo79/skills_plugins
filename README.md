@@ -54,6 +54,8 @@ and `scripts/cad_direct.py` exposes it as a CLI (`layers`, `draw --calls`, `scri
 on the same Windows box as CAD. `references/direct-cli.md` covers that path, including why
 cross-machine use still wants the MCP server. 13 offline tests
 (`python3 cad-skill/tests/test_cad_core.py`) drive the CLI end to end against fake COM.
+`cad-skill/assets/example-two-bedroom/` holds a ready-to-run 96 m² two-bedroom example
+(8 walls, 10 openings → 63 entities) with a runbook that goes all the way to DWG.
 
 ### `cad-mcp/` — local copy of the CAD-MCP server (patched)
 

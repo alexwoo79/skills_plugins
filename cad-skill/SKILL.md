@@ -34,6 +34,7 @@ CAD-MCP 只会基础图元（线/圆/弧/多段线/矩形/文字/填充/标注�
 | 图元多、嫌慢，或要判断该不该改 CAD-MCP 源码 | `references/performance.md` |
 | 要装/改服务端本身 | 本仓库 `cad-mcp/` 本地副本（勿联网拉上游代码），改动见 `cad-mcp/PATCHES.md` |
 | 不想用 MCP，直接用程序调用 CAD | `references/direct-cli.md` + `scripts/cad_direct.py` |
+| 想要一份照抄就能跑通的两居室示例 | `assets/example-two-bedroom/`（`plan.json` + `runbook.md`） |
 
 ## 工具速查
 
@@ -75,6 +76,10 @@ python3 scripts/wall_plan.py plan.json --pretty
 ```
 
 脚本只做几何换算，不产生设计决策；洞口坐标与墙厚必须来自用户确认过的方案。
+
+第一次上手可以照抄 `assets/example-two-bedroom/runbook.md`：里面有 8 段墙 / 10 个洞口的
+完整 `plan.json`、四条命令跑到 DWG、以及每一步的预期数字（63 个图元）与检查点。
+脚本会在洞口越界、洞口重叠、洞口贴墙角时给出 `warnings`——先改方案再落图。
 
 ## 大批量落图：一次脚本，而不是几百次调用
 
