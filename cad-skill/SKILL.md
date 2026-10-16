@@ -32,6 +32,7 @@ CAD-MCP 只会基础图元（线/圆/弧/多段线/矩形/文字/填充/标注�
 | 画建筑平面：图层、构件画法、分步顺序、Prompt 模板、AGENTS.md | `references/drafting-conventions.md` |
 | 直墙带洞口（门/窗）的坐标容易算错 | 先跑 `scripts/wall_plan.py` 生成调用序列 |
 | 图元多、嫌慢，或要判断该不该改 CAD-MCP 源码 | `references/performance.md` |
+| 要装/改服务端本身 | 本仓库 `cad-mcp/` 本地副本（勿联网拉上游代码），改动见 `cad-mcp/PATCHES.md` |
 
 ## 工具速查
 

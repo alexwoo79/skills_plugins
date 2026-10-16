@@ -48,6 +48,15 @@ when a rewrite is — or is not — worth it. Copy it into `~/.codex/skills/` li
 skills; unlike everything else in this repo it targets **Windows** (CAD-MCP drives
 AutoCAD / GstarCAD / ZWCAD over COM).
 
+### `cad-mcp/` — local copy of the CAD-MCP server (patched)
+
+Vendored copy of [CAD-MCP](https://github.com/daobataotie/CAD-MCP) v2.0 (MIT, `LICENSE`
+included) so the skill never has to fetch code from the network. It carries one local
+optimization — layer / ModelSpace caching in `src/cad_controller.py`, documented in
+`PATCHES.md` with a diff in `patches/` — which cuts the per-entity COM round trips from
+24 to 4 with 8 layers (see `tests/test_layer_cache.py`, runs offline without Windows or
+CAD). The upstream demo gif was dropped to keep the repo small.
+
 ### `omarchy-plugins/` — Omarchy shell plugins
 
 | Plugin | What it does |

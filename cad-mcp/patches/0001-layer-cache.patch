@@ -1,0 +1,132 @@
+--- a/src/cad_controller.py
++++ b/src/cad_controller.py
+@@ -152,6 +152,15 @@
+         self.app = None
+         self.doc = None
+         self.entities = {}  # 存储已创建图形的实体引用，用于后续修改
++        # 图层与模型空间缓存（本地优化，见 PATCHES.md）：
++        # 逐图元绘图时，图层枚举与属性读取的跨进程往返远多于绘图本身，
++        # _ensure_layer 每次都枚举全部图层，_ms() 每次都重新取 ModelSpace，
++        # 缓存后单条实体的 COM 往返可从 ~6+2N 次降到 ~4 次。
++        # key 为图层名 casefold 值，value 为 (图层对象, CAD返回的真实图层名)
++        self._layer_cache: Dict[str, Tuple[Any, str]] = {}
++        self._model_space = None
++        # 缓存归属的文档：文档对象一变（新建/打开/关闭/重连）缓存整体失效
++        self._cache_owner = None
+         # 专用COM线程执行器：所有COM调用经由它串行执行
+         self.executor = COMExecutor()
+         # 从配置文件加载参数
+@@ -349,9 +358,36 @@
+                                     (), {}, retry_attr=name)
+ 
+     def _ms(self):
+-        """获取模型空间（属性读取同样可能被忙碌的CAD拒绝，需带重试）"""
+-        return self._call(getattr, self.doc, "ModelSpace")
++        """获取模型空间（属性读取同样可能被忙碌的CAD拒绝，需带重试）
+ 
++        ModelSpace 在同一个文档生命周期内是稳定的，缓存它省掉每次绘图的
++        一次跨进程往返；文档切换时 _cache_ready() 会自动失效。
++        """
++        self._cache_ready()
++        if self._model_space is None:
++            self._model_space = self._call(getattr, self.doc, "ModelSpace")
++        return self._model_space
++
++    def _cache_ready(self) -> bool:
++        """确认缓存仍属于当前文档；文档对象变了就整体作废
++
++        只比较文档对象的身份：self.doc 在新建/打开/关闭/重连时都会被重新赋值，
++        因此这里不需要在那些分支里逐个手动清理缓存，避免漏掉某条路径后
++        把旧文档的图层对象用到新文档上。
++        """
++        if self._cache_owner is not self.doc:
++            self._layer_cache = {}
++            self._model_space = None
++            self._cache_owner = self.doc
++            return False
++        return True
++
++    def invalidate_caches(self) -> None:
++        """清空图层/模型空间缓存（图层被CAD界面改动、外部改图后调用）"""
++        self._layer_cache = {}
++        self._model_space = None
++        self._cache_owner = self.doc
++
+     @contextmanager
+     def _undo_group(self):
+         """将本次工具操作打包为独立撤销组（保证UNDO 1正好撤销一步）
+@@ -476,9 +512,16 @@
+         # 如果指定了图层，设置图层
+         if layer:
+             # 确保图层存在（只创建不激活：避免把用户正在使用的当前图层悄悄切走）
+-            target_layer = self._ensure_layer(layer)
+-            # 设置实体的图层（使用CAD返回的真实图层名，避免传入名称大小写不匹配）
+-            self._call(setattr, entity, "Layer", self._call(getattr, target_layer, "Name"))
++            real_name = self._ensure_layer_entry(layer)[1]
++            try:
++                # 设置实体的图层（使用CAD返回的真实图层名，避免传入名称大小写不匹配）
++                self._call(setattr, entity, "Layer", real_name)
++            except Exception:
++                # 用户可能在CAD界面里删掉或改名过图层，缓存里的对象已失效：
++                # 清空缓存重解析一次，仍失败则抛出这次的真实异常
++                logger.debug(f"图层 {layer} 设置失败，清空图层缓存后重试一次")
++                self.invalidate_caches()
++                self._call(setattr, entity, "Layer", self._ensure_layer_entry(layer)[1])
+ 
+         # 如果指定了颜色，设置颜色
+         if color is not None:
+@@ -808,17 +851,49 @@
+         绘图时指定图层走这里：只保证实体能落到目标图层，
+         不把用户正在使用的当前图层悄悄切走。
+         Layers集合与Name读取都可能被忙碌的CAD拒绝，逐调用重试。
++
+         """
+-        layers = self._call(getattr, self.doc, "Layers")
+-        for i in range(self._call(getattr, layers, "Count")):
++        return self._ensure_layer_entry(layer_name)[0]
++
++    def _ensure_layer_entry(self, layer_name: str) -> Tuple[Any, str]:
++        """确保图层存在，返回 (图层对象, CAD返回的真实图层名)
++
++        带缓存：这是逐图元绘图路径上最贵的操作（一次枚举 = 2 + 2×图层数
++        次 COM 往返），而图层在两次绘图之间几乎不会变。
++        首次枚举时顺手把整轮结果都存进缓存，后续每个图层都是 0 次往返；
++        命中的缓存同时带上真实图层名，省掉 _apply_style 里为大小写
++        写回而额外读一次 Name 的往返。
++        """
++        key = layer_name.casefold()
++        self._cache_ready()
++        cached = self._layer_cache.get(key)
++        if cached is not None:
++            return cached
++
++        layers = self._call(getattr, self.doc, "Layers")
++        count = self._call(getattr, layers, "Count")
++        # 整轮枚举一次、把全部图层都存进缓存（而不是命中就提前返回）：
++        # 代价是首次 2+2N 次往返一次付清，换来之后每个图层都是 0 次——
++        # 一套建筑平面通常用到 6~8 个图层，摊下来远小于逐层重复枚举。
++        for i in range(count):
+             layer = self._call_attr(layers, "Item", i)
++            name = self._call(getattr, layer, "Name")
+             # CAD图层名不区分大小写，比较时忽略大小写
+             # （否则"wall"会对已存在的"WALL"重复Add，被CAD拒绝）
+-            if self._call(getattr, layer, "Name").casefold() == layer_name.casefold():
+-                return layer
++            self._layer_cache[name.casefold()] = (layer, name)
++        cached = self._layer_cache.get(key)
++        if cached is not None:
++            return cached
++
+         # 不存在则创建（独立撤销组）
+         with self._undo_group():
+-            return self._call_attr(layers, "Add", layer_name)
++            new_layer = self._call_attr(layers, "Add", layer_name)
++        # 取CAD返回的真实名称（大小写可能与请求不同），只在建层时多这一次往返
++        real_name = self._call(getattr, new_layer, "Name")
++        entry = (new_layer, real_name)
++        self._layer_cache[key] = entry
++        self._layer_cache[real_name.casefold()] = entry
++        return entry
+ 
+     def create_layer(self, layer_name: str) -> bool:    # , color: Union[int, Tuple[int, int, int]] = 7
+         """创建新图层并设为当前图层（已存在则直接激活）

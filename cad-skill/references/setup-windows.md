@@ -9,12 +9,22 @@ CAD-MCP 依赖 Windows COM（pywin32）控制本机 CAD，只在 Windows 上运�
 - Python 3.10+
 - Codex CLI（或支持同一份 `config.toml` 的 Codex 客户端）
 
-## 安装 CAD-MCP
+## 安装 CAD-MCP（用本地副本，不要联网拉代码）
 
-```bash
-git clone https://github.com/daobataotie/CAD-MCP.git
-cd CAD-MCP
-pip install -r requirements.txt
+服务端源码就在本仓库的 `cad-mcp/`（与 `cad-skill/` 同级），是 CAD-MCP v2.0 的本地副本，
+已包含图层缓存优化（见 `cad-mcp/PATCHES.md`）。部署方式是把整个 `cad-mcp/` 目录拷到 Windows 机器：
+
+```powershell
+# 在目标机器的 cad-mcp 目录里
+pip install -r requirements.txt      # 只装依赖，不取代码
+```
+
+依赖（`mcp`、`pywin32`、`pydantic`、`Pillow`）需要从 PyPI 装一次。目标机器完全离线时，
+先在有网的机器上备好轮子再拷过去：
+
+```powershell
+pip download -r requirements.txt -d wheels      # 有网的机器
+pip install --no-index --find-links wheels -r requirements.txt   # 离线机器
 ```
 
 装成 CLI（可选）：
@@ -23,6 +33,9 @@ pip install -r requirements.txt
 pip install -e .
 cad-mcp
 ```
+
+不要用 GitHub 上的上游代码覆盖 `cad-mcp/`：本地改动集中在 `src/cad_controller.py`，
+差异补丁在 `cad-mcp/patches/0001-layer-cache.patch`。
 
 ## 配置 `src/config.json`
 
