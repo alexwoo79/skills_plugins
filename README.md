@@ -36,6 +36,15 @@ contact the author first: [@alexwoo79](https://github.com/alexwoo79).**
 | --- | --- |
 | `design-metrics-skills/` | Personal plugin with two building-design skills — `building-metrics-calculation` (city-rule metric calculation) and `keyan-calculation` (feasibility-stage measurement) — plus the shared Python `engine/` |
 
+### `cad-skill/` — natural-language CAD drafting (not installed yet)
+
+Skill for driving a real CAD session through [CAD-MCP](https://github.com/daobataotie/CAD-MCP):
+architectural plan drafting (grid, walls, doors/windows, furniture, text, dimensions, layers)
+with a design-first, step-by-step workflow, plus `scripts/wall_plan.py`, which turns a
+straight-wall + opening spec into the exact MCP tool-call sequence. Copy it into
+`~/.codex/skills/` like the other skills; unlike everything else in this repo it targets
+**Windows** (CAD-MCP drives AutoCAD / GstarCAD / ZWCAD over COM).
+
 ### `omarchy-plugins/` — Omarchy shell plugins
 
 | Plugin | What it does |

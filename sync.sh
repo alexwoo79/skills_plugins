@@ -18,7 +18,7 @@ omarchy_plugins="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins"
 
 # ~/.codex/skills — .system ships with Codex, and omarchy/diagnose-crash are
 # symlinks into the Omarchy package, so both stay out of the backup.
-for skill in data-clean data-workflow markdown-ppt omarchy-proxyctl print-sheet smartboard-analysis; do
+for skill in cad-skill data-clean data-workflow markdown-ppt omarchy-proxyctl print-sheet smartboard-analysis; do
   [ -d "$codex_home/skills/$skill" ] || continue
   rsync -a --delete --exclude 'bin/markdown-ppt' \
     "$codex_home/skills/$skill/" "$repo/codex-skills/$skill/"

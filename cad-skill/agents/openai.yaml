@@ -1,0 +1,4 @@
+interface:
+  display_name: "CAD 绘图"
+  short_description: "自然语言驱动 CAD：轴网/墙门窗/文字尺寸/图层，出可编辑 DWG"
+  default_prompt: "用 $cad-skill 按毫米帮我画一套两居室平面：先出布局方案，我确认后再分步调用 CAD 绘图"
