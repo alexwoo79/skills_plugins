@@ -35,6 +35,7 @@ CAD-MCP 只会基础图元（线/圆/弧/多段线/矩形/文字/填充/标注�
 | 要装/改服务端本身 | 本仓库 `cad-mcp/` 本地副本（勿联网拉上游代码），改动见 `cad-mcp/PATCHES.md` |
 | 不想用 MCP，直接用程序调用 CAD | `references/direct-cli.md` + `scripts/cad_direct.py` |
 | 想要一份照抄就能跑通的两居室示例 | `assets/example-two-bedroom/`（`plan.json` + `runbook.md`） |
+| 手上是图片/扫描件，想描成墙线或 DXF | `references/image-vectorize.md` + `scripts/image_to_calls.py` |
 
 ## 工具速查
 
@@ -80,6 +81,19 @@ python3 scripts/wall_plan.py plan.json --pretty
 第一次上手可以照抄 `assets/example-two-bedroom/runbook.md`：里面有 8 段墙 / 10 个洞口的
 完整 `plan.json`、四条命令跑到 DWG、以及每一步的预期数字（63 个图元）与检查点。
 脚本会在洞口越界、洞口重叠、洞口贴墙角时给出 `warnings`——先改方案再落图。
+
+## 从图片描图
+
+线稿/扫描件可以用 `scripts/image_to_calls.py` 矢量化，输出 `plan.json`（墙中心线 + 厚度 + 洞口）
+或 DXF，再接上面同一条落图链路。三条铁律：
+
+1. **必须先标定**：`--px-per-mm` 或 `--calibrate "x1,y1 x2,y2" --real 12000`，再给 `--origin`；
+   没有单位就只能输出像素坐标（`--mode lines` 可以，`--mode walls` 会被拒绝）。
+2. **先看预览再落图**：`--preview check.png` 是给人确认的，门/窗类型只是按宽度与门扇线**猜**的。
+3. **如实说明精度**：干净线稿接近逐段还原（实测墙 8/8、洞口 10/10、轴位置误差 0mm），
+   扫描件会掉一档（墙 7/8、洞口 8/10）。不要把描图结果说成"自动生成施工图"。
+
+依赖 `opencv-python-headless` 与 `ezdxf`，细节与实测数据见 `references/image-vectorize.md`。
 
 ## 大批量落图：一次脚本，而不是几百次调用
 

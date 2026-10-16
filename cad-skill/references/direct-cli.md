@@ -10,6 +10,8 @@ CAD 驱动层内联在 skill 的 `vendor/cad_core.py` 里（图层/模型空间�
 - Python 3.10+，依赖只有 `pip install pywin32 pillow`（Pillow 仅截图用）
 - CAD（AutoCAD / 浩辰 / 中望）已安装；没在运行时会自动拉起，首次等待约 20 秒
 - CAD 类型用 `--cad-type` 或环境变量 `CAD_TYPE` 指定（默认 `AUTOCAD`，可选 `GCAD` / `GSTARCAD` / `ZWCAD`）
+- 只有描图功能（`image_to_calls.py`）额外要 `opencv-python-headless` 与 `ezdxf`；它不碰 CAD，
+  所以也可以放在 Codex 那一侧跑，把 `plan.json` / `calls.json` 传过来
 
 ## 契约
 

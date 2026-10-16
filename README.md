@@ -56,6 +56,10 @@ cross-machine use still wants the MCP server. 13 offline tests
 (`python3 cad-skill/tests/test_cad_core.py`) drive the CLI end to end against fake COM.
 `cad-skill/assets/example-two-bedroom/` holds a ready-to-run 96 m² two-bedroom example
 (8 walls, 10 openings → 63 entities) with a runbook that goes all the way to DWG.
+`scripts/image_to_calls.py` traces a raster line drawing into that same `plan.json`
+(wall centrelines + thickness + openings) or into a DXF, with measured accuracy locked
+by tests: 8/8 walls and 10/10 openings on a clean render, 7/8 and 8/10 on a noisy,
+0.5°-rotated scan.
 
 ### `cad-mcp/` — local copy of the CAD-MCP server (patched)
 
