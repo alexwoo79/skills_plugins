@@ -65,6 +65,12 @@ by tests: 8/8 walls and 10/10 openings on a clean render, 7/8 and 8/10 on a nois
 stroke text — by tracing outer contours plus holes into an even-odd filled SVG or a DXF
 with island-aware hatches, reporting area ratio and IoU against the source image.
 
+`scripts/image_to_walls.py` handles furnished plans drawn with **solid thick walls**:
+it separates walls by thickness (thin furniture strokes and label glyphs drop out), thins
+them to centre lines, measures each wall's thickness from the distance transform and emits
+a DXF with walls on `A-WALL` and everything else on `A-TRACE`. On the sample plan: 63 wall
+segments in two thickness classes (18.8 / 10.2 px), 98.7% wall-pixel coverage, 0.8 s.
+
 ### `cad-mcp/` — local copy of the CAD-MCP server (patched)
 
 Vendored copy of [CAD-MCP](https://github.com/daobataotie/CAD-MCP) v2.0 (MIT, `LICENSE`

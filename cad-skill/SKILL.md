@@ -88,10 +88,12 @@ python3 scripts/wall_plan.py plan.json --pretty
 
 | 图 | 脚本 | 输出 |
 | --- | --- | --- |
-| 线稿 / 扫描平面图 | `scripts/image_to_calls.py` | `plan.json`（墙中心线 + 厚度 + 洞口）、调用序列、DXF |
+| 双线线稿（CAD 导出） | `scripts/image_to_calls.py` | `plan.json`（墙中心线 + 厚度 + 洞口）、调用序列、DXF |
+| 实心厚墙平面图（家装/售楼图） | `scripts/image_to_walls.py` | DXF（`A-WALL` 墙矩形 + `A-TRACE` 线work）、`plan.json`（仅墙） |
 | logo / 图标 / 实心图形 | `scripts/image_to_vector.py` | SVG（even-odd 填充）或多边形 + 填充的 DXF（`--hatch`） |
 
-线稿走这一条：矢量化出 `plan.json` 后接上面同一条落图链路。三条铁律：
+先判断图属于哪一类（双线线稿 / 实心厚墙 / 实心图形），算法完全不同，拿错脚本只会得到碎线或错墙。
+两条出 `plan.json` 的路线之后都接上面同一条落图链路，三条铁律：
 
 1. **必须先标定**：`--px-per-mm` 或 `--calibrate "x1,y1 x2,y2" --real 12000`，再给 `--origin`；
    没有单位就只能输出像素坐标（`--mode lines` 可以，`--mode walls` 会被拒绝）。
