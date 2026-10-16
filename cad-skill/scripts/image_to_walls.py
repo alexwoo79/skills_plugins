@@ -46,6 +46,20 @@ def load_gray(path: str) -> np.ndarray:
     return cv2.cvtColor(np.array(Image.open(path).convert("RGB")), cv2.COLOR_RGB2GRAY)
 
 
+def load_channels(path: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """返回 (灰度, 明度V, 饱和度S)
+
+    彩色效果图里地板/木饰是**有饱和度的中间调**（灰阶上看是"深色"），
+    只按灰度取墨迹会把它们整片当成墙。墙体是近黑且接近中性灰，
+    所以判据要同时看明度与饱和度。
+    """
+    if Image is None:
+        raise RuntimeError("需要 Pillow")
+    rgb = np.array(Image.open(path).convert("RGB"))
+    hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+    return (cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY), hsv[:, :, 2], hsv[:, :, 1])
+
+
 def auto_ink_threshold(gray: np.ndarray) -> float:
     """Otsu 分层后再取两类均值的中间值（硬边图上 Otsu 会落在类别灰度值上）"""
     cut = float(cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[0])
@@ -55,13 +69,46 @@ def auto_ink_threshold(gray: np.ndarray) -> float:
     return cut
 
 
-def wall_mask(gray: np.ndarray, threshold: float, min_wall_px: float):
-    """墙体掩膜：先按灰度取深色墨迹，再用开运算滤掉比 min_wall_px 更细的线（家具、文字）"""
-    ink = (gray < threshold).astype(np.uint8) * 255
+def wall_mask(gray: np.ndarray, threshold: float, min_wall_px: float,
+              saturation: np.ndarray = None, sat_max: float = 0.0):
+    """墙体掩膜：先按灰度取深色墨迹，再用开运算滤掉比 min_wall_px 更细的线（家具、文字）
+
+    saturation/sat_max 给了就再卡一道饱和度：彩色地板、木饰、彩色家具填充
+    是有饱和度的，不属于"墨线"；墙体近黑且中性。这一步能显著减少彩色图上的误检。
+    """
+    ink_map = gray < threshold
+    if saturation is not None and sat_max > 0:
+        ink_map = ink_map & (saturation < sat_max)
+    ink = ink_map.astype(np.uint8) * 255
     radius = max(1, int(round(min_wall_px / 2)))
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1))
     walls = cv2.morphologyEx(ink, cv2.MORPH_OPEN, kernel)
     return walls, ink
+
+
+def drop_blob_components(mask: np.ndarray, thickness_hint: float,
+                         min_size_ratio: float = 5.0, fill_ratio_max: float = 0.55
+                         ) -> Tuple[np.ndarray, int, int]:
+    """剔除"块状填色物"（家具、洁具、植物、深色台面），返回 (掩膜, 丢弃数, 丢弃面积)
+
+    判据：在**两个方向上都明显大于墙厚**（min(w,h) ≥ min_size_ratio × 墙厚），
+    且外接框被填得较满（fill_ratio > fill_ratio_max）——这是色块的形状特征；
+    墙段是细长的、转角是空心的 L 形，都不会满足。
+    """
+    if thickness_hint <= 0:
+        return mask, 0, 0
+    count, labels, stats, _ = cv2.connectedComponentsWithStats((mask > 0).astype(np.uint8), 8)
+    keep = np.ones(count, dtype=bool)
+    dropped = dropped_area = 0
+    for index in range(1, count):
+        x, y, w, h, area = stats[index]
+        if area <= 0:
+            continue
+        if min(w, h) >= min_size_ratio * thickness_hint and area / float(w * h) > fill_ratio_max:
+            keep[index] = False
+            dropped += 1
+            dropped_area += int(area)
+    return np.where(keep[labels], mask, 0).astype(np.uint8), dropped, dropped_area
 
 
 def drop_small_components(mask: np.ndarray, min_area: float) -> Tuple[np.ndarray, int, int]:
@@ -233,6 +280,242 @@ def merge_thickness(segments: List[Dict[str, Any]], tolerance: float = 0.35
             "total_segments": len(values)}
 
 
+# ---------------------------------------------------------------- 空间（房间）识别
+
+def building_envelope(wall_mask: np.ndarray, seal_px: int) -> np.ndarray:
+    """建筑外壳：闭运算封门窗洞口后填洞，取最大连通域
+
+    外壳用来把"室外"排除掉——门窗是房间通向室外的开口，不封上就会让室内
+    和室外连成一片（实测只剩 1~3 个房间）。
+
+    核尺寸两头都试过：短边 1/8 封不住 188px 的窗洞（灰图只剩 0 个房间），
+    短边 1/3 又会把外壳拓扑搞坏、把室外算进来。现在按墙厚推导（12 倍墙厚）、
+    上限取短边 1/4，并在 detect_rooms 里用"边界必须有真墙"再筛一遍。
+    """
+    seal_px = max(3, min(seal_px, min(wall_mask.shape) // 4))
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * seal_px + 1, 2 * seal_px + 1))
+    closed = cv2.morphologyEx(wall_mask, cv2.MORPH_CLOSE, kernel)
+    count, labels, stats, _ = cv2.connectedComponentsWithStats((closed > 0).astype(np.uint8), 8)
+    if count <= 1:
+        return closed
+    biggest = 1 + int(np.argmax(stats[1:, 4]))
+    component = (labels == biggest).astype(np.uint8) * 255
+    envelope = cv2.bitwise_or(component, fill_holes(component))
+    # 裁到墙网外接框：闭运算会把外壳撑到图边，边距会被当成"室内"多算面积
+    # （实测合成图上因此多出 4 个假房间、面积接近真实值的两倍）
+    ys, xs = np.nonzero(wall_mask)
+    if len(xs):
+        envelope[:max(0, ys.min() - 1), :] = 0
+        envelope[ys.max() + 2:, :] = 0
+        envelope[:, :max(0, xs.min() - 1)] = 0
+        envelope[:, xs.max() + 2:] = 0
+    return envelope
+
+
+def neighbour_count(binary: np.ndarray) -> np.ndarray:
+    """8 邻域计数。
+
+    别用 cv2.filter2D(ddepth=-1)：在 uint8 上实测把"两个邻居"算成了 1，
+    于是每个骨架像素都被当成端点（实测 9115/9239），进而桥接乱连。
+    """
+    image = (binary > 0).astype(np.int16)
+    padded = np.pad(image, 1)
+    height, width = image.shape
+    return sum(padded[dy:dy + height, dx:dx + width]
+               for dy in (0, 1, 2) for dx in (0, 1, 2) if (dy, dx) != (1, 1))
+
+
+def prune_spurs(skeleton: np.ndarray, min_branch: int = 12) -> np.ndarray:
+    """剪掉短于 min_branch 的骨架毛刺：毛刺会在洞口检测里制造假端点"""
+    image = (skeleton > 0).astype(np.uint8).copy()
+    height, width = image.shape
+    for _ in range(3):
+        neighbours = neighbour_count(image)
+        ys, xs = np.nonzero((image > 0) & (neighbours == 1))
+        removed = 0
+        for x, y in zip(xs, ys):
+            path = [(int(x), int(y))]
+            px, py = int(x), int(y)
+            reached_branch = False
+            for _step in range(min_branch):
+                nxt = None
+                for dy in (-1, 0, 1):
+                    for dx in (-1, 0, 1):
+                        cx, cy = px + dx, py + dy
+                        if (dx or dy) and 0 <= cy < height and 0 <= cx < width \
+                                and image[cy, cx] and (cx, cy) not in path:
+                            nxt = (cx, cy)
+                            break
+                    if nxt:
+                        break
+                if nxt is None:
+                    break
+                if neighbours[nxt[1], nxt[0]] >= 3:
+                    reached_branch = True
+                    break
+                path.append(nxt)
+                px, py = nxt
+            if reached_branch:
+                for rx, ry in path:
+                    image[ry, rx] = 0
+                    removed += 1
+        if not removed:
+            break
+    return image
+
+
+def skeleton_endpoints(skeleton: np.ndarray, radius: int = 12):
+    """骨架端点及其局部主方向（邻域 PCA），用于找洞口两侧相对的墙端"""
+    neighbours = neighbour_count(skeleton)
+    ys, xs = np.nonzero((skeleton > 0) & (neighbours == 1))
+    endpoints = []
+    for x, y in zip(xs, ys):
+        window = skeleton[max(0, y - radius):y + radius + 1, max(0, x - radius):x + radius + 1]
+        wy, wx = np.nonzero(window)
+        if len(wx) < 5:
+            continue
+        points = np.stack([wx, wy], axis=1).astype(float)
+        points -= points.mean(axis=0)
+        _, singular, vt = np.linalg.svd(points, full_matrices=False)
+        if singular[1] > 0.35 * singular[0]:      # 附近分支多 → 交汇点，不是洞口端
+            continue
+        endpoints.append((int(x), int(y), vt[0]))
+    return endpoints
+
+
+def bridge_openings(mask: np.ndarray, max_gap_px: float, min_gap_px: float = 4.0,
+                    angle_tol_deg: float = 35.0):
+    """把相对的墙端接起来（门窗洞口），返回 (桥接后的掩膜, 桥接数量)"""
+    skeleton = prune_spurs(thin(mask))
+    distance = cv2.distanceTransform((mask > 0).astype(np.uint8), cv2.DIST_L2, 5)
+    endpoints = skeleton_endpoints(skeleton)
+    bridged_mask = mask.copy()
+    used = set()
+    bridges = 0
+    for i, (x1, y1, direction1) in enumerate(endpoints):
+        if i in used:
+            continue
+        best = None
+        for j in range(len(endpoints)):
+            if j == i or j in used:
+                continue
+            x2, y2, direction2 = endpoints[j]
+            gap = math.hypot(x2 - x1, y2 - y1)
+            if not (min_gap_px <= gap <= max_gap_px):
+                continue
+            vector = np.array([x2 - x1, y2 - y1], float) / gap
+            angle1 = math.degrees(math.acos(min(1.0, abs(float(np.dot(direction1, vector))))))
+            angle2 = math.degrees(math.acos(min(1.0, abs(float(np.dot(direction2, vector))))))
+            if angle1 > angle_tol_deg or angle2 > angle_tol_deg:
+                continue
+            if best is None or gap < best[0]:     # 取最近的合规搭档，避免跨房间乱连
+                best = (gap, j, x2, y2)
+        if best is not None:
+            _, j, x2, y2 = best
+            thickness = int(round(2 * max(distance[y1, x1], distance[y2, x2])))
+            cv2.line(bridged_mask, (x1, y1), (x2, y2), 255, thickness=max(1, thickness))
+            bridges += 1
+            used.update((i, j))
+    return bridged_mask, bridges
+
+
+def fill_holes(mask: np.ndarray) -> np.ndarray:
+    """填内部空洞：把"不接触图像边界"的背景连通域当作洞
+
+    比"从 (0,0) 灌背景再取反"稳：核过大时角落可能已属于连通域，
+    那时灌水法会把整张图误当外壳（实测合成图上房间被切碎成 4 块）。
+    """
+    background = (mask == 0).astype(np.uint8)
+    count, labels = cv2.connectedComponents(background, 4)
+    if count <= 1:
+        return np.zeros_like(mask)
+    border = set(labels[0, :].tolist()) | set(labels[-1, :].tolist()) \
+        | set(labels[:, 0].tolist()) | set(labels[:, -1].tolist())
+    border.discard(0)
+    keep = np.ones(count, dtype=bool)
+    for label in border:
+        keep[label] = False
+    return np.where(keep[labels], 255, 0).astype(np.uint8)
+
+
+def detect_rooms(wall_mask: np.ndarray, scale: float, min_area_m2: float,
+                 seal_mm: float = 3000.0, door_half_mm: float = 450.0,
+                 epsilon_px: float = 4.0, seal_px: int = None,
+                 door_half_px: float = None,
+                 min_area_px: float = None,
+                 min_support: float = 0.5) -> List[Dict[str, Any]]:
+    """在外壳内按"门口颈部"切分房间（距离变换 + 分水岭）
+
+    做法参考经典房间分割：门口是自由空间里的窄颈，房间中心离墙远。
+    以"离墙 > 门口半宽"的区域作种子，再让分水岭在自由空间内生长到边界，
+    颈部自然成为分界——不依赖洞口是否被完全桥接。
+    """
+    height, width = wall_mask.shape
+    seal = seal_px if seal_px is not None else max(3, int(round(seal_mm * scale / 2)))
+    envelope = building_envelope(wall_mask, seal)
+    interior = ((envelope > 0) & (wall_mask == 0)).astype(np.uint8)
+    interior = cv2.erode(interior, np.ones((3, 3), np.uint8))   # 削掉贴墙的 1px 缝
+    if not interior.any():
+        return []
+    distance = cv2.distanceTransform(interior, cv2.DIST_L2, 5)
+    door_half = door_half_px if door_half_px is not None else door_half_mm * scale
+    seeds = (distance > door_half).astype(np.uint8)
+    seed_labels = cv2.connectedComponents(seeds, 4)[1]
+    markers = np.zeros((height, width), np.int32)               # 0 = 未知，交给分水岭
+    markers[interior == 0] = 1                                  # 1 = 背景
+    markers[seeds > 0] = seed_labels[seeds > 0] + 1
+    if markers.max() < 2:
+        return []
+    canvas = cv2.cvtColor(interior * 255, cv2.COLOR_GRAY2BGR)
+    labels = cv2.watershed(canvas, markers)
+
+    rooms: List[Dict[str, Any]] = []
+    calibrated = scale != 1.0
+    for label in sorted(int(v) for v in np.unique(labels) if v > 1):
+        region = ((labels == label) & (interior > 0)).astype(np.uint8)
+        area = int(region.sum())
+        if area == 0:
+            continue
+        # 未标定时"1m²"没有意义（会变成 1e6px²），改用按墙厚推导的像素面积
+        if min_area_px is not None:
+            if area < min_area_px:
+                continue
+        else:
+            area_m2 = area / (scale * scale) / 1e6
+            if area_m2 < min_area_m2:
+                continue
+        ys, xs = np.nonzero(region)
+        if xs.min() <= 0 or ys.min() <= 0 or xs.max() >= width - 1 or ys.max() >= height - 1:
+            continue                                            # 贴图像边界 → 室外
+        # 真实性校验：房间边界必须由真墙支撑。闭运算造出来的假区域/室外口袋
+        # 边界下面没有真墙，这一条能把它们筛掉（实测灰图曾因此多算 85% 面积）。
+        band = cv2.dilate(region, np.ones((5, 5), np.uint8)) & cv2.bitwise_not(region * 255)
+        wall_band = cv2.dilate((wall_mask > 0).astype(np.uint8) * 255, np.ones((5, 5), np.uint8))
+        band_pixels = float((band > 0).sum())
+        if band_pixels <= 0:
+            continue
+        real_wall = float(((band > 0) & (wall_band > 0)).sum()) / band_pixels
+        if real_wall < min_support:
+            continue
+        contours, _ = cv2.findContours(region, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            continue
+        contour = max(contours, key=cv2.contourArea)
+        approx = cv2.approxPolyDP(contour, epsilon_px, True).reshape(-1, 2).astype(float)
+        if len(approx) < 3:
+            continue
+        moments = cv2.moments(region, binaryImage=True)
+        centroid = (moments["m10"] / moments["m00"], moments["m01"] / moments["m00"])
+        rooms.append({"index": 0, "area_px": area,
+                      "area_m2": round(area / (scale * scale) / 1e6, 2) if calibrated else None,
+                      "centroid_px": [float(centroid[0]), float(centroid[1])],
+                      "vertices": int(len(approx)), "polygon_px": approx.tolist()})
+    rooms.sort(key=lambda room: -room["area_px"])
+    for order, room in enumerate(rooms, start=1):
+        room["index"] = order
+    return rooms
+
+
 # ---------------------------------------------------------------- 输出
 
 def to_mm(value: float, scale: float, flip: bool, size: int, origin: float) -> float:
@@ -242,7 +525,9 @@ def to_mm(value: float, scale: float, flip: bool, size: int, origin: float) -> f
 
 def write_dxf(path: str, walls: List[Dict[str, Any]], thin: List[Dict[str, Any]],
               scale: float, shape, origin, wall_style: str, wall_layer: str,
-              trace_layer: str, centerline_layer: str, extend: bool = True) -> Dict[str, int]:
+              trace_layer: str, centerline_layer: str, extend: bool = True,
+              rooms: List[Dict[str, Any]] = None, room_layer: str = "A-ROOM",
+              room_labels: bool = False, label_height_mm: float = 200.0) -> Dict[str, int]:
     import ezdxf
     height, width = shape
     converted: List[Tuple[float, float]] = []
@@ -288,6 +573,18 @@ def write_dxf(path: str, walls: List[Dict[str, Any]], thin: List[Dict[str, Any]]
             second = (segment["offset"], segment["end"])
         model.add_line(point(*first), point(*second), dxfattribs={"layer": trace_layer})
         counts["trace_lines"] += 1
+
+    for room in (rooms or []):
+        polygon = [point(*p) for p in room["polygon_px"]]
+        model.add_lwpolyline(polygon, close=True, dxfattribs={"layer": room_layer})
+        counts["room_polylines"] = counts.get("room_polylines", 0) + 1
+        if room_labels:
+            centre = point(*room["centroid_px"])
+            label = model.add_text("R%d  %.1fm2" % (room["index"], room["area_m2"]),
+                                   height=label_height_mm,  # 图纸单位（毫米）
+                                   dxfattribs={"layer": room_layer})
+            label.set_placement(centre)
+            counts["room_labels"] = counts.get("room_labels", 0) + 1
     doc.saveas(path)
     return counts
 
@@ -338,10 +635,34 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out-plan", help="额外输出 wall_plan.py 认的 plan.json（仅墙）")
     parser.add_argument("--wall-threshold", type=float,
                         help="墙体灰度阈值（默认 Otsu 自动，取两类均值中间值）")
+    parser.add_argument("--sat-max", type=float, default=90.0,
+                        help="墙体最大饱和度（默认 90，0=关闭）：彩色地板/木饰/彩色家具填充"
+                             "有饱和度，不该被当成墨线；墙体近黑且中性")
     parser.add_argument("--line-threshold", type=float, default=235.0,
                         help="线work灰度阈值（默认 235，含家具/洁具/文字）")
     parser.add_argument("--min-wall-px", type=float, default=8.0,
                         help="最小墙厚（像素，默认 8）：比它细的线（家具、文字）会被开运算滤掉")
+    parser.add_argument("--blob-size-ratio", type=float, default=5.0,
+                        help="块状物剔除阈值（默认 5）：两个方向都大于 5 倍墙厚、且外接框填得"
+                             "很满的连通域按家具色块剔除；0=关闭")
+    parser.add_argument("--min-room-m2", type=float, default=1.0,
+                        help="最小房间面积（平方米，默认 1.0），更小的当噪点")
+    parser.add_argument("--no-rooms", dest="rooms", action="store_false",
+                        help="不做房间（空间）识别")
+    parser.add_argument("--room-layer", default="A-ROOM")
+    parser.add_argument("--room-labels", action="store_true",
+                        help="在房间中心写序号与面积（默认不写，保持画面整洁）")
+    parser.add_argument("--seal-mm", type=float, default=3000.0,
+                        help="外壳封洞尺度（毫米，默认 3000）：闭运算把门窗封上，"
+                             "不封的话室内会从窗口漏到室外（实测只剩 3 个房间）")
+    parser.add_argument("--door-half-mm", type=float, default=450.0,
+                        help="门口半宽（毫米，默认 450）：离墙超过它的区域作房间种子，"
+                             "分水岭在门口颈部切分房间")
+    parser.add_argument("--room-wall-support", type=float, default=0.5,
+                        help="房间边界的真墙支撑下限（默认 0.5）：低于它认为是闭运算"
+                             "造出的假区域；窗洞大的图可下调")
+    parser.add_argument("--keep-outside-trace", dest="trace_inside_only", action="store_false",
+                        help="保留室外线work（默认只保留室内，尺寸线/指北针等不进 DXF）")
     parser.add_argument("--component-min-area", type=float, default=0.0,
                         help="丢弃面积小于该值（像素²）的连通域，默认 0=不过滤；"
                              "指北针/尺寸箭头/文字笔画通常 <1000，可设 600")
@@ -383,13 +704,17 @@ def main(argv=None) -> int:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
         return EXIT_USAGE
     try:
-        gray = load_gray(args.image)
+        gray, value, saturation = load_channels(args.image)
     except (RuntimeError, OSError) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
         return EXIT_FAILURE
 
     threshold = args.wall_threshold or auto_ink_threshold(gray)
-    walls_mask, ink_mask = wall_mask(gray, threshold, args.min_wall_px)
+    walls_mask, ink_mask = wall_mask(gray, threshold, args.min_wall_px,
+                                     saturation=saturation, sat_max=args.sat_max)
+    walls_mask, blob_dropped, blob_area = drop_blob_components(
+        walls_mask, args.min_wall_px, args.blob_size_ratio) if args.blob_size_ratio > 0 \
+        else (walls_mask, 0, 0)
     walls_mask, dropped_components, dropped_area = drop_small_components(
         walls_mask, args.component_min_area)
     if not walls_mask.any():
@@ -424,6 +749,40 @@ def main(argv=None) -> int:
         trace_mask = ((gray < args.line_threshold) & ~(walls_mask > 0)).astype(np.uint8) * 255
         thin_segments = skeleton_segments(thin(trace_mask, 30), None,
                                           args.min_segment_px, 3.0)
+
+    # 空间识别：先桥接门洞（否则房间会从门口连成一片），再把墙外连通域当房间
+    room_list: List[Dict[str, Any]] = []
+    if args.rooms:
+        if scale == 1.0:
+            # 未标定：毫米阈值没有意义（450mm 会被当成 450px）。改用实测墙厚推导：
+            # 门口半宽 ≈ 3 倍墙厚、封洞尺度 ≈ 12 倍墙厚。
+            thickness_px = merge_thickness(walls)["groups"][0]["thickness_px"] if walls else 18.0
+            room_list = detect_rooms(walls_mask, scale, args.min_room_m2,
+                                     seal_px=int(round(15 * thickness_px)),
+                                     door_half_px=3 * thickness_px,
+                                     min_area_px=max(500.0, (12 * thickness_px) ** 2))
+        else:
+            room_list = detect_rooms(walls_mask, scale, args.min_room_m2,
+                                     seal_mm=args.seal_mm, door_half_mm=args.door_half_mm,
+                                     min_support=args.room_wall_support)
+
+    trace_filtered_out = 0
+    if args.trace and args.trace_inside_only and room_list:
+        interior = np.zeros(gray.shape, np.uint8)
+        for room in room_list:
+            cv2.fillPoly(interior, [np.array(room["polygon_px"], np.int32)], 255)
+        interior[walls_mask > 0] = 255
+        kept_segments = []
+        for segment in thin_segments:
+            if segment["orient"] == "H":
+                point_px = (int((segment["start"] + segment["end"]) / 2), int(segment["offset"]))
+            else:
+                point_px = (int(segment["offset"]), int((segment["start"] + segment["end"]) / 2))
+            if 0 <= point_px[1] < interior.shape[0] and 0 <= point_px[0] < interior.shape[1] \
+                    and interior[point_px[1], point_px[0]]:
+                kept_segments.append(segment)
+        trace_filtered_out = len(thin_segments) - len(kept_segments)
+        thin_segments = kept_segments
 
     height, width = gray.shape
     min_x = min((s["start"] if s["orient"] == "H" else s["offset"]) for s in walls)
@@ -460,6 +819,15 @@ def main(argv=None) -> int:
         "dropped_component_area": dropped_area,
         "dropped_thick_segments": dropped_thick,
         "snapped_segments": snapped,
+        "dropped_blob_components": blob_dropped,
+        "dropped_blob_area": blob_area,
+        "sat_max": args.sat_max,
+        "rooms": len(room_list),
+        "room_total_area_m2": (round(sum(r["area_m2"] for r in room_list), 2)
+                               if scale != 1.0 else None),
+        "room_total_area_px": sum(r["area_px"] for r in room_list),
+        "room_sizes_m2": ([r["area_m2"] for r in room_list] if scale != 1.0 else None),
+        "trace_filtered_out": trace_filtered_out,
     }
     if scale == 1.0:
         payload["scale_note"] = ("未标定：几何单位是像素。给 --px-per-mm 或 "
@@ -468,7 +836,8 @@ def main(argv=None) -> int:
     if args.out_dxf:
         counts = write_dxf(args.out_dxf, walls, thin_segments, scale, gray.shape, origin,
                            args.walls, args.wall_layer, args.trace_layer, args.centerline_layer,
-                           extend=args.extend_ends)
+                           extend=args.extend_ends, rooms=room_list,
+                           room_layer=args.room_layer, room_labels=args.room_labels)
         payload.update(counts)
         payload["dxf"] = args.out_dxf
     if args.out_plan:

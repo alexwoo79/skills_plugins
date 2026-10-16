@@ -53,9 +53,15 @@ def run_cli(argv):
 
 
 def draw_plan(path: str, walls: bool = True, furniture: bool = True,
-              labels: bool = True) -> str:
+              labels: bool = True, blob: bool = False, coloured: bool = False) -> str:
     """600×520 的小平面：一圈 18px 厚墙 + 一道隔墙 + 3px 家具线 + 6px 房间名"""
-    image = Image.new("RGB", (600, 520), (255, 255, 255))
+    if coloured:
+        image = Image.new("RGB", (600, 520), (255, 255, 255))
+        floor = ImageDraw.Draw(image)
+        floor.rectangle((112, 72, 288, 448), fill=(250, 222, 140))   # 木地板：有饱和度
+        floor.rectangle((312, 72, 488, 448), fill=(232, 240, 200))
+    else:
+        image = Image.new("RGB", (600, 520), (255, 255, 255))
     draw = ImageDraw.Draw(image)
     if walls:
         half = WALL_PX // 2
@@ -70,6 +76,9 @@ def draw_plan(path: str, walls: bool = True, furniture: bool = True,
         colour = (LINE_INK,) * 3
         for box in ((140, 100, 260, 220), (340, 100, 460, 220), (140, 300, 260, 420)):
             draw.rectangle(box, outline=colour, width=FURNITURE_PX)   # 床/沙发轮廓
+    if blob:
+        # 深色实心家具（沙发/床垫那种色块）：两个方向都远大于墙厚，应被块状过滤剔除
+        draw.rectangle((150, 330, 250, 430), fill=(40, 40, 40))
     if labels:
         # 房间名那种小笔画：够深但很细，必须被厚度过滤掉
         for x in range(200, 260, 12):
@@ -130,7 +139,7 @@ class WallExtractionTests(unittest.TestCase):
     @unittest.skipIf(ezdxf is None, "需要 ezdxf")
     def test_no_trace_option(self) -> None:
         dxf_path = os.path.join(self.tmp, "walls_only.dxf")
-        code, payload = run_cli([self.plan, "--out-dxf", dxf_path, "--no-trace"])
+        code, payload = run_cli([self.plan, "--out-dxf", dxf_path, "--no-trace", "--no-rooms"])
         self.assertEqual(code, 0, payload)
         doc = ezdxf.readfile(dxf_path)
         layers = {entity.dxf.layer for entity in doc.modelspace()}
@@ -183,6 +192,49 @@ class WallExtractionTests(unittest.TestCase):
         self.assertIn(120.0, classes)
         self.assertIn(None, classes)          # 没吸附上的也要如实报出来
         self.assertGreater(classes[120.0], 0)  # 18px / 0.15 = 120mm
+
+    def test_rooms_are_detected(self) -> None:
+        """隔墙把平面分成两个房间，面积应接近 (400-18)/0.15 × (400-18)/0.15"""
+        code, payload = run_cli([self.plan, "--px-per-mm", "0.15"])
+        self.assertEqual(code, 0, payload)
+        self.assertEqual(payload["rooms"], 2, payload["room_sizes_m2"])
+        for area in payload["room_sizes_m2"]:
+            self.assertGreater(area, 2.0)
+            self.assertLess(area, 5.0)
+
+    def test_rooms_can_be_disabled_and_layered(self) -> None:
+        dxf_path = os.path.join(self.tmp, "rooms.dxf")
+        code, payload = run_cli([self.plan, "--out-dxf", dxf_path, "--px-per-mm", "0.15"])
+        self.assertEqual(code, 0, payload)
+        if ezdxf is not None:
+            doc = ezdxf.readfile(dxf_path)
+            layers = {}
+            for entity in doc.modelspace():
+                layers[entity.dxf.layer] = layers.get(entity.dxf.layer, 0) + 1
+            self.assertEqual(layers.get("A-ROOM"), payload["rooms"])
+
+        code, payload = run_cli([self.plan, "--no-rooms"])
+        self.assertEqual(code, 0, payload)
+        self.assertEqual(payload["rooms"], 0)
+
+    def test_dark_furniture_block_is_not_a_wall(self) -> None:
+        """深色实心家具块不能被当成墙（墙面是细长的，色块不是）"""
+        path = draw_plan(os.path.join(self.tmp, "with_blob.png"), blob=True)
+        code, payload = run_cli([path, "--px-per-mm", "0.15"])
+        self.assertEqual(code, 0, payload)
+        self.assertGreaterEqual(payload["dropped_blob_components"], 1)
+        for group in payload["thickness"]["groups"]:
+            # 家具块 100×100px，若误判成墙会出现远大于墙厚的"墙段"
+            self.assertLess(group["thickness_px"], 5 * WALL_PX, group)
+
+    def test_coloured_floor_is_not_wall(self) -> None:
+        """彩色地板有饱和度，不属于墨线：加了饱和过滤后墙体结果应基本不变"""
+        plain = draw_plan(os.path.join(self.tmp, "plain.png"))
+        coloured = draw_plan(os.path.join(self.tmp, "coloured.png"), coloured=True)
+        _, base = run_cli([plain, "--px-per-mm", "0.15"])
+        _, tinted = run_cli([coloured, "--px-per-mm", "0.15"])
+        self.assertEqual(tinted["wall_segments"], base["wall_segments"])
+        self.assertGreaterEqual(tinted["wall_mask_coverage"], 0.9)
 
 
 if __name__ == "__main__":
