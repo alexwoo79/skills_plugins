@@ -31,6 +31,7 @@ CAD-MCP 只会基础图元（线/圆/弧/多段线/矩形/文字/填充/标注�
 | 要调用具体工具、确认参数与返回值 | `references/cad-mcp-tools.md` |
 | 画建筑平面：图层、构件画法、分步顺序、Prompt 模板、AGENTS.md | `references/drafting-conventions.md` |
 | 直墙带洞口（门/窗）的坐标容易算错 | 先跑 `scripts/wall_plan.py` 生成调用序列 |
+| 图元多、嫌慢，或要判断该不该改 CAD-MCP 源码 | `references/performance.md` |
 
 ## 工具速查
 
@@ -71,6 +72,19 @@ python3 scripts/wall_plan.py plan.json --pretty
 ```
 
 脚本只做几何换算，不产生设计决策；洞口坐标与墙厚必须来自用户确认过的方案。
+
+## 大批量落图：一次脚本，而不是几百次调用
+
+逐条调用 MCP 工具时，每个图元都要走一次跨进程 COM 往返，其中大部分开销花在图层解析和撤销标记上。图元超过几十个就先批量：
+
+```bash
+python3 scripts/wall_plan.py plan.json > calls.json
+python3 scripts/plan_to_scr.py calls.json --out plan.scr --dimtxt 250
+```
+
+把 `plan.scr` 拷到装 CAD 的机器，用 CAD 里的 `SCRIPT` 命令执行，或经 MCP 一次提交 `send_command("_.SCRIPT C:\\path\\plan.scr")`。脚本默认整批一个撤销组、末尾 `ZOOM E`；提交后先 `list_entities` 核对实体数再 `screenshot`，因为脚本执行是异步的。
+
+细节、标注和填充再逐条用 MCP 工具补（`draw_hatch` 无法脚本化）。详见 `references/performance.md`。
 
 ## 修改与纠错
 
