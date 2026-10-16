@@ -504,7 +504,8 @@ def detect_rooms(wall_mask: np.ndarray, scale: float, min_area_m2: float,
                  epsilon_px: float = 4.0, seal_px: int = None,
                  door_half_px: float = None,
                  min_area_px: float = None,
-                 min_support: float = 0.5) -> List[Dict[str, Any]]:
+                 min_support: float = 0.5,
+                 envelope: np.ndarray = None) -> List[Dict[str, Any]]:
     """在外壳内按"门口颈部"切分房间（距离变换 + 分水岭）
 
     做法参考经典房间分割：门口是自由空间里的窄颈，房间中心离墙远。
@@ -513,7 +514,8 @@ def detect_rooms(wall_mask: np.ndarray, scale: float, min_area_m2: float,
     """
     height, width = wall_mask.shape
     seal = seal_px if seal_px is not None else max(3, int(round(seal_mm * scale / 2)))
-    envelope = building_envelope(wall_mask, seal)
+    if envelope is None:
+        envelope = building_envelope(wall_mask, seal)
     interior = ((envelope > 0) & (wall_mask == 0)).astype(np.uint8)
     interior = cv2.erode(interior, np.ones((3, 3), np.uint8))   # 削掉贴墙的 1px 缝
     if not interior.any():
@@ -708,11 +710,12 @@ def build_parser() -> argparse.ArgumentParser:
                              "很满的连通域按家具色块剔除；0=关闭")
     parser.add_argument("--min-room-m2", type=float, default=1.0,
                         help="最小房间面积（平方米，默认 1.0），更小的当噪点")
-    parser.add_argument("--no-rooms", dest="rooms", action="store_false",
-                        help="不做房间（空间）识别")
+    parser.add_argument("--rooms", action="store_true",
+                        help="额外做房间（空间）识别：输出 A-ROOM 闭合轮廓与面积统计。"
+                             "默认不做——默认只用建筑外壳剔除室外线work，不生成闭合线也不报面积")
     parser.add_argument("--room-layer", default="A-ROOM")
     parser.add_argument("--room-labels", action="store_true",
-                        help="在房间中心写序号与面积（默认不写，保持画面整洁）")
+                        help="在房间中心写序号与面积（隐含 --rooms；默认不写，保持画面整洁）")
     parser.add_argument("--seal-mm", type=float, default=3000.0,
                         help="外壳封洞尺度（毫米，默认 3000）：闭运算把门窗封上，"
                              "不封的话室内会从窗口漏到室外（实测只剩 3 个房间）")
@@ -822,26 +825,32 @@ def main(argv=None) -> int:
         thin_segments = skeleton_segments(thin(trace_mask, 30), None,
                                           args.min_segment_px, 3.0)
 
-    # 空间识别：先桥接门洞（否则房间会从门口连成一片），再把墙外连通域当房间
+    # 室内掩膜：外壳（封门窗后填洞）就够用来剔除室外线work，是默认路径；
+    # 房间多边形与面积统计要显式 --rooms（默认不生成、不输出）
+    thickness_px = (merge_thickness(walls)["groups"][0]["thickness_px"] if walls else 18.0)
+    if scale == 1.0:
+        seal_px = int(round(15 * thickness_px))
+        envelope = building_envelope(walls_mask, seal_px)
+        door_half = 3 * thickness_px
+        min_area_px = max(500.0, (12 * thickness_px) ** 2)
+    else:
+        seal_px = max(3, int(round(args.seal_mm * scale / 2)))
+        envelope = building_envelope(walls_mask, seal_px)
+        door_half = args.door_half_mm * scale
+        min_area_px = None
+
     room_list: List[Dict[str, Any]] = []
     if args.rooms:
-        if scale == 1.0:
-            # 未标定：毫米阈值没有意义（450mm 会被当成 450px）。改用实测墙厚推导：
-            # 门口半宽 ≈ 3 倍墙厚、封洞尺度 ≈ 12 倍墙厚。
-            thickness_px = merge_thickness(walls)["groups"][0]["thickness_px"] if walls else 18.0
-            room_list = detect_rooms(walls_mask, scale, args.min_room_m2,
-                                     seal_px=int(round(15 * thickness_px)),
-                                     door_half_px=3 * thickness_px,
-                                     min_area_px=max(500.0, (12 * thickness_px) ** 2))
-        else:
-            room_list = detect_rooms(walls_mask, scale, args.min_room_m2,
-                                     seal_mm=args.seal_mm, door_half_mm=args.door_half_mm,
-                                     min_support=args.room_wall_support)
+        room_list = detect_rooms(walls_mask, scale, args.min_room_m2,
+                                 seal_px=seal_px, door_half_px=door_half,
+                                 min_area_px=min_area_px,
+                                 min_support=args.room_wall_support,
+                                 envelope=envelope)
 
     trace_filtered_out = 0
-    if args.trace and args.trace_inside_only and room_list:
-        interior = np.zeros(gray.shape, np.uint8)
-        for room in room_list:
+    if args.trace and args.trace_inside_only:
+        interior = envelope.copy()
+        for room in room_list:      # 开了房间就用房间多边形（更精确）
             cv2.fillPoly(interior, [np.array(room["polygon_px"], np.int32)], 255)
         interior[walls_mask > 0] = 255
         kept_segments = []
@@ -913,16 +922,18 @@ def main(argv=None) -> int:
         "dropped_blob_components": blob_dropped,
         "dropped_blob_area": blob_area,
         "sat_max": args.sat_max,
-        "rooms": len(room_list),
-        "room_total_area_m2": (round(sum(r["area_m2"] for r in room_list), 2)
-                               if scale != 1.0 else None),
-        "room_total_area_px": sum(r["area_px"] for r in room_list),
-        "room_sizes_m2": ([r["area_m2"] for r in room_list] if scale != 1.0 else None),
         "trace_filtered_out": trace_filtered_out,
         "trace_removed_short": trace_removed_short,
         "trace_removed_dense": trace_removed_dense,
         "trace_clean_basis": trace_clean_basis,
     }
+    # 房间与面积只在显式 --rooms 时才出现（默认不生成闭合线、不输出面积）
+    if args.rooms:
+        payload["rooms"] = len(room_list)
+        payload["room_areas_m2"] = ([r["area_m2"] for r in room_list] if scale != 1.0 else None)
+        payload["room_areas_px"] = [r["area_px"] for r in room_list]
+        if scale != 1.0:
+            payload["room_total_area_m2"] = round(sum(r["area_m2"] for r in room_list), 2)
     if scale == 1.0:
         payload["scale_note"] = ("未标定：几何单位是像素。给 --px-per-mm 或 "
                                  "--calibrate \"x1,y1 x2,y2\" --real 毫米 才是真实尺寸；"

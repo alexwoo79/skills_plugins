@@ -146,7 +146,7 @@ class WallExtractionTests(unittest.TestCase):
     @unittest.skipIf(ezdxf is None, "需要 ezdxf")
     def test_no_trace_option(self) -> None:
         dxf_path = os.path.join(self.tmp, "walls_only.dxf")
-        code, payload = run_cli([self.plan, "--out-dxf", dxf_path, "--no-trace", "--no-rooms"])
+        code, payload = run_cli([self.plan, "--out-dxf", dxf_path, "--no-trace"])
         self.assertEqual(code, 0, payload)
         doc = ezdxf.readfile(dxf_path)
         layers = {entity.dxf.layer for entity in doc.modelspace()}
@@ -202,16 +202,29 @@ class WallExtractionTests(unittest.TestCase):
 
     def test_rooms_are_detected(self) -> None:
         """隔墙把平面分成两个房间，面积应接近 (400-18)/0.15 × (400-18)/0.15"""
-        code, payload = run_cli([self.plan, "--px-per-mm", "0.15"])
+        code, payload = run_cli([self.plan, "--px-per-mm", "0.15", "--rooms"])
         self.assertEqual(code, 0, payload)
-        self.assertEqual(payload["rooms"], 2, payload["room_sizes_m2"])
-        for area in payload["room_sizes_m2"]:
+        self.assertEqual(payload["rooms"], 2, payload["room_areas_m2"])
+        for area in payload["room_areas_m2"]:
             self.assertGreater(area, 2.0)
             self.assertLess(area, 5.0)
 
-    def test_rooms_can_be_disabled_and_layered(self) -> None:
-        dxf_path = os.path.join(self.tmp, "rooms.dxf")
+    def test_rooms_are_off_by_default(self) -> None:
+        """默认不生成房间闭合线、也不输出面积；要房间得显式 --rooms"""
+        dxf_path = os.path.join(self.tmp, "default.dxf")
         code, payload = run_cli([self.plan, "--out-dxf", dxf_path, "--px-per-mm", "0.15"])
+        self.assertEqual(code, 0, payload)
+        self.assertNotIn("rooms", payload)
+        self.assertNotIn("room_total_area_m2", payload)
+        self.assertNotIn("room_areas_m2", payload)
+        if ezdxf is not None:
+            doc = ezdxf.readfile(dxf_path)
+            layers = {entity.dxf.layer for entity in doc.modelspace()}
+            self.assertNotIn("A-ROOM", layers)
+
+    def test_rooms_layer_when_requested(self) -> None:
+        dxf_path = os.path.join(self.tmp, "rooms.dxf")
+        code, payload = run_cli([self.plan, "--out-dxf", dxf_path, "--px-per-mm", "0.15", "--rooms"])
         self.assertEqual(code, 0, payload)
         if ezdxf is not None:
             doc = ezdxf.readfile(dxf_path)
@@ -219,10 +232,6 @@ class WallExtractionTests(unittest.TestCase):
             for entity in doc.modelspace():
                 layers[entity.dxf.layer] = layers.get(entity.dxf.layer, 0) + 1
             self.assertEqual(layers.get("A-ROOM"), payload["rooms"])
-
-        code, payload = run_cli([self.plan, "--no-rooms"])
-        self.assertEqual(code, 0, payload)
-        self.assertEqual(payload["rooms"], 0)
 
     def test_dark_furniture_block_is_not_a_wall(self) -> None:
         """深色实心家具块不能被当成墙（墙面是细长的，色块不是）"""
@@ -252,7 +261,7 @@ class WallExtractionTests(unittest.TestCase):
         self.assertGreater(cleaned["trace_removed_short"] + cleaned["trace_removed_dense"], 0)
         self.assertEqual(cleaned["trace_clean_basis"], "mm")
         self.assertEqual(cleaned["wall_segments"], raw["wall_segments"])
-        self.assertEqual(cleaned["rooms"], raw["rooms"])
+        self.assertNotIn("rooms", cleaned, "默认不输出房间统计")
 
 
 class TraceCleaningTests(unittest.TestCase):
