@@ -3,6 +3,6 @@ __pycache__/
 .venv/
 .DS_Store
 
-# 第三方标识的描摹产物：只在本机留作参照，不入库（可用 out/README.md 里的命令复现）
-out/deepseek-logo.svg
-out/deepseek-logo.dxf
+# 转换产物（图纸 DXF/SVG、墙线 JSON 等）：只在本机留用，不入库
+# 复现命令与实测指标见 out/README.md
+out/
