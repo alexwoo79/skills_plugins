@@ -64,6 +64,48 @@ def wall_mask(gray: np.ndarray, threshold: float, min_wall_px: float):
     return walls, ink
 
 
+def drop_small_components(mask: np.ndarray, min_area: float) -> Tuple[np.ndarray, int, int]:
+    """丢掉面积过小的连通域（指北针、尺寸箭头、文字笔画），返回 (掩膜, 丢弃数, 丢弃面积)
+
+    注意不能"只留最大块"：门窗会把墙网打断成几十块（本样本 43 块），
+    只留最大块会把大半面墙丢掉。按绝对面积过滤才安全。
+    """
+    if min_area <= 0:
+        return mask, 0, 0
+    count, labels, stats, _ = cv2.connectedComponentsWithStats((mask > 0).astype(np.uint8), 8)
+    keep = np.zeros(count, dtype=bool)
+    dropped = dropped_area = 0
+    for index in range(1, count):
+        area = int(stats[index][4])
+        if area >= min_area:
+            keep[index] = True
+        else:
+            dropped += 1
+            dropped_area += area
+    return np.where(keep[labels], mask, 0).astype(np.uint8), dropped, dropped_area
+
+
+def snap_thickness(walls: List[Dict[str, Any]], targets: List[float],
+                   tolerance: float) -> int:
+    """把墙厚吸附到常见值（如 100/120/200/240mm），容差内才吸附
+
+    厚度取的是距离变换中位数，交汇与洞口附近会偏薄（本样本 237 → 240mm 更接近真实）。
+    """
+    if not targets:
+        return 0
+    snapped = 0
+    for wall in walls:
+        thickness = wall.get("thickness")
+        if not thickness:
+            continue
+        nearest = min(targets, key=lambda value: abs(value - thickness))
+        if abs(nearest - thickness) <= tolerance * nearest:
+            if abs(nearest - thickness) > 1e-9:
+                snapped += 1
+            wall["thickness"] = float(nearest)
+    return snapped
+
+
 # ---------------------------------------------------------------- 骨架化
 
 def thin(binary: np.ndarray, max_iterations: int = 60) -> np.ndarray:
@@ -194,7 +236,7 @@ def merge_thickness(segments: List[Dict[str, Any]], tolerance: float = 0.35
 # ---------------------------------------------------------------- 输出
 
 def to_mm(value: float, scale: float, flip: bool, size: int, origin: float) -> float:
-    delta = (value - origin) * scale
+    delta = (value - origin) / scale
     return -delta if flip else delta
 
 
@@ -266,7 +308,7 @@ def write_plan_json(path: str, walls: List[Dict[str, Any]], scale: float, origin
         else:
             start, end = xy(wall["offset"], wall["start"]), xy(wall["offset"], wall["end"])
         entries.append({"id": f"W{index}-{wall['orient']}", "from": start, "to": end,
-                        "thickness": round((wall.get("thickness") or 0) * scale, 1),
+                        "thickness": round((wall.get("thickness") or 0) / scale, 1),
                         "openings": []})
     with open(path, "w", encoding="utf-8") as handle:
         json.dump({"walls": entries}, handle, ensure_ascii=False, indent=2)
@@ -300,6 +342,16 @@ def build_parser() -> argparse.ArgumentParser:
                         help="线work灰度阈值（默认 235，含家具/洁具/文字）")
     parser.add_argument("--min-wall-px", type=float, default=8.0,
                         help="最小墙厚（像素，默认 8）：比它细的线（家具、文字）会被开运算滤掉")
+    parser.add_argument("--component-min-area", type=float, default=0.0,
+                        help="丢弃面积小于该值（像素²）的连通域，默认 0=不过滤；"
+                             "指北针/尺寸箭头/文字笔画通常 <1000，可设 600")
+    parser.add_argument("--max-wall-px", type=float, default=0.0,
+                        help="丢弃厚度超过该值（像素）的段，默认 0=不过滤；"
+                             "T 型交汇处最大内切圆偏大，会产生个别虚厚段（可设 60）")
+    parser.add_argument("--snap-thickness",
+                        help="把墙厚吸附到这些常见值（毫米，逗号分隔，如 100,120,200,240）")
+    parser.add_argument("--snap-tolerance", type=float, default=0.2,
+                        help="墙厚吸附容差（相对值，默认 0.2）")
     parser.add_argument("--walls", choices=("rectangles", "centerlines", "both"),
                         default="rectangles", help="墙体画法：闭合矩形 / 中心线 / 两者都要")
     parser.add_argument("--min-segment-px", type=float, default=10.0,
@@ -338,6 +390,8 @@ def main(argv=None) -> int:
 
     threshold = args.wall_threshold or auto_ink_threshold(gray)
     walls_mask, ink_mask = wall_mask(gray, threshold, args.min_wall_px)
+    walls_mask, dropped_components, dropped_area = drop_small_components(
+        walls_mask, args.component_min_area)
     if not walls_mask.any():
         print(json.dumps({"ok": False,
                           "error": "没有识别到墙体：调小 --min-wall-px 或调大 --wall-threshold"},
@@ -348,6 +402,17 @@ def main(argv=None) -> int:
     skeleton = thin(walls_mask)
     walls = [s for s in skeleton_segments(skeleton, distance, args.min_segment_px, args.join_gap)
              if (s.get("thickness") or 0) >= args.min_wall_px * 0.8]
+    dropped_thick = 0
+    if args.max_wall_px > 0:
+        kept = [s for s in walls if (s.get("thickness") or 0) <= args.max_wall_px]
+        dropped_thick = len(walls) - len(kept)
+        walls = kept
+    targets = [float(v) * scale for v in args.snap_thickness.split(",") if v.strip()] \
+        if args.snap_thickness else []
+    raw_groups = merge_thickness(walls)
+    candidates = [float(v) for v in args.snap_thickness.split(",") if v.strip()] \
+        if args.snap_thickness else []
+    snapped = snap_thickness(walls, targets, args.snap_tolerance)
     rebuilt = reconstruct(walls, gray.shape, extend=args.extend_ends)
     truth = walls_mask > 0
     intersection = float(((rebuilt > 0) & truth).sum())
@@ -371,16 +436,30 @@ def main(argv=None) -> int:
         "image_size": [width, height],
         "wall_threshold": round(threshold, 1),
         "min_wall_px": args.min_wall_px,
-        "px_per_unit": scale,
+        "px_per_mm": scale,
         "wall_segments": len(walls),
         "wall_total_length_px": round(sum(s["length"] for s in walls), 1),
-        "wall_total_length_units": round(sum(s["length"] for s in walls) * scale, 1),
+        "wall_total_length_mm": round(sum(s["length"] for s in walls) / scale, 1),
         "thickness": merge_thickness(walls),
+        "thickness_raw": raw_groups,
+        "thickness_classes": ([
+            {"thickness_mm": target,
+             "segments": sum(1 for s in walls
+                             if s.get("thickness") and abs(s["thickness"] - target * scale) < 1e-6)}
+            for target in candidates
+        ] + [{"thickness_mm": None,
+              "segments": sum(1 for s in walls if s.get("thickness") and
+                              not any(abs(s["thickness"] - t * scale) < 1e-6 for t in candidates))}]
+            if candidates else []),
         "wall_mask_iou": round(intersection / union, 4) if union else 0.0,
         "wall_mask_coverage": round(intersection / float(truth.sum()), 4) if truth.sum() else 0.0,
         "trace_segments": len(thin_segments),
         "ink_pixels": int((ink_mask > 0).sum()),
         "wall_pixels": int((walls_mask > 0).sum()),
+        "dropped_components": dropped_components,
+        "dropped_component_area": dropped_area,
+        "dropped_thick_segments": dropped_thick,
+        "snapped_segments": snapped,
     }
     if scale == 1.0:
         payload["scale_note"] = ("未标定：几何单位是像素。给 --px-per-mm 或 "

@@ -177,15 +177,19 @@ def fidelity(mask, outers, holes) -> Dict[str, Any]:
 # ---------------------------------------------------------------- 输出
 
 def to_mm(points: np.ndarray, scale: float, height: int, origin: Tuple[float, float]):
-    """像素 → 图纸单位：y 轴翻转（图像向下为正，CAD/SVG 的常见坐标向上为正）"""
-    return [((x - origin[0]) * scale, (origin[1] - y) * scale) for x, y in points]
+    """像素 → 毫米：y 轴翻转（图像向下为正，CAD/SVG 常用坐标向上为正）
+
+    scale 是「每毫米多少像素」（px/mm），所以这里要除——与 `image_to_calls.py`
+    的语义保持一致；写成乘法在 scale=1 时看不出，给了比例就会差一个平方级的量纲。
+    """
+    return [((x - origin[0]) / scale, (origin[1] - y) / scale) for x, y in points]
 
 
 def write_svg(path: str, outers, holes, scale: float, height: int, width: int,
               origin, color: Tuple[int, int, int]) -> None:
     """写出 even-odd 填充的 SVG：外轮廓与孔在同一个 path 里，孔自动挖空"""
-    bbox_w = (max(p[0] for c in outers for p in c) - min(p[0] for c in outers for p in c)) * scale
-    bbox_h = (max(p[1] for c in outers for p in c) - min(p[1] for c in outers for p in c)) * scale
+    bbox_w = (max(p[0] for c in outers for p in c) - min(p[0] for c in outers for p in c)) / scale
+    bbox_h = (max(p[1] for c in outers for p in c) - min(p[1] for c in outers for p in c)) / scale
     subpaths = []
     for outer, group in zip(outers, holes):
         rings = [outer] + list(group)
@@ -253,7 +257,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="超采样倍率（默认 4，1=关闭）：放大连续通道后再卡阈值，得到亚像素边界，"
                              "避免轮廓整体缩小")
     parser.add_argument("--px-per-mm", type=float, default=1.0,
-                        help="像素 → 图纸单位比例（默认 1，即 1px = 1 单位）")
+                        help="每毫米多少像素（默认 1，即 1px = 1 单位）。"
+                             "想让 400px 的图形出成 100mm 宽，就填 4.0")
     parser.add_argument("--outer-layer", default="A-TRACE")
     parser.add_argument("--hole-layer", default="A-TRACE")
     parser.add_argument("--fill-layer", default="A-HATCH")
@@ -291,7 +296,9 @@ def main(argv=None) -> int:
         "foreground": note,
         "supersample": max(1, args.supersample),
         "fill_color": "#%02x%02x%02x" % color,
-        "px_per_unit": args.px_per_mm,
+        "px_per_mm": args.px_per_mm,
+        "bbox_px": [round(max(p[0] for c in outers for p in c) - min(p[0] for c in outers for p in c), 1),
+                    round(max(p[1] for c in outers for p in c) - min(p[1] for c in outers for p in c), 1)],
         "outer_contours": len(outers),
         "holes": sum(len(group) for group in holes),
         "dropped_contours": dropped,

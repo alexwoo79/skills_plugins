@@ -139,15 +139,21 @@ class WallExtractionTests(unittest.TestCase):
 
     def test_calibration_sets_units(self) -> None:
         plan_path = os.path.join(self.tmp, "walls.json")
-        code, payload = run_cli([self.plan, "--px-per-mm", "0.1", "--out-plan", plan_path])
+        # 0.15 px/mm：18px 的墙 = 120mm（真实内隔墙量级），用有物理意义的数字断言，
+        # 这样"把除法写成乘法"这种单位错误会被抓住（曾真的漏过一次）
+        code, payload = run_cli([self.plan, "--px-per-mm", "0.15", "--out-plan", plan_path])
         self.assertEqual(code, 0, payload)
         self.assertNotIn("scale_note", payload)
         self.assertAlmostEqual(payload["thickness"]["groups"][0]["thickness_px"], WALL_PX, delta=2)
+        self.assertAlmostEqual(payload["thickness"]["groups"][0]["thickness_px"] / 0.15,
+                               120.0, delta=15.0)
+        self.assertAlmostEqual(payload["wall_total_length_mm"],
+                               payload["wall_total_length_px"] / 0.15, delta=1.0)
         with open(plan_path, encoding="utf-8") as handle:
             spec = json.load(handle)
         self.assertEqual(len(spec["walls"]), payload["wall_segments"])
         for wall in spec["walls"]:
-            self.assertAlmostEqual(wall["thickness"], WALL_PX * 0.1, delta=0.3)
+            self.assertAlmostEqual(wall["thickness"], WALL_PX / 0.15, delta=20.0)
 
     def test_uncalibrated_run_warns_about_scale(self) -> None:
         code, payload = run_cli([self.plan])
@@ -158,6 +164,25 @@ class WallExtractionTests(unittest.TestCase):
         _, extended = run_cli([self.plan])
         _, plain = run_cli([self.plan, "--no-extend-ends"])
         self.assertGreater(extended["wall_mask_coverage"], plain["wall_mask_coverage"])
+
+    def test_max_wall_px_trades_coverage(self) -> None:
+        """T 型交汇处会出个别虚厚段；过滤它们会掉覆盖率（实测 0.968 → 0.86），
+        所以默认不过滤，只在 DXF 里真出现虚厚块时才用。"""
+        _, plain = run_cli([self.plan])
+        _, limited = run_cli([self.plan, "--max-wall-px", "24"])
+        self.assertLessEqual(limited["wall_segments"], plain["wall_segments"])
+        self.assertLessEqual(limited["wall_mask_coverage"], plain["wall_mask_coverage"])
+        self.assertGreaterEqual(limited["dropped_thick_segments"], 0)
+
+    def test_thickness_classes_report_snapped_and_unsnapped(self) -> None:
+        code, payload = run_cli([self.plan, "--px-per-mm", "0.15",
+                                 "--snap-thickness", "120,240"])
+        self.assertEqual(code, 0, payload)
+        self.assertIn("thickness_raw", payload)
+        classes = {c["thickness_mm"]: c["segments"] for c in payload["thickness_classes"]}
+        self.assertIn(120.0, classes)
+        self.assertIn(None, classes)          # 没吸附上的也要如实报出来
+        self.assertGreater(classes[120.0], 0)  # 18px / 0.15 = 120mm
 
 
 if __name__ == "__main__":

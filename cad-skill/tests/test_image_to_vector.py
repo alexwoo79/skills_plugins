@@ -118,6 +118,9 @@ class ShapeTracingTests(unittest.TestCase):
         self.assertIn('fill-rule="evenodd"', content)     # 孔靠 even-odd 挖空
         self.assertEqual(content.count("M "), 5)          # 3 外轮廓 + 2 孔
         self.assertIn("mm", content)
+        # 尺寸要用物理量核对：宽度(mm) = 外接框像素 / (px per mm)
+        width_mm = float(content.split('width="')[1].split("mm")[0])
+        self.assertAlmostEqual(width_mm, payload["bbox_px"][0] / 0.5, delta=1.0)
 
     @unittest.skipIf(ezdxf is None, "需要 ezdxf")
     def test_dxf_output_with_hatch_islands(self) -> None:
