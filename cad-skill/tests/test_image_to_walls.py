@@ -53,7 +53,8 @@ def run_cli(argv):
 
 
 def draw_plan(path: str, walls: bool = True, furniture: bool = True,
-              labels: bool = True, blob: bool = False, coloured: bool = False) -> str:
+              labels: bool = True, blob: bool = False, coloured: bool = False,
+              hatch: bool = False) -> str:
     """600×520 的小平面：一圈 18px 厚墙 + 一道隔墙 + 3px 家具线 + 6px 房间名"""
     if coloured:
         image = Image.new("RGB", (600, 520), (255, 255, 255))
@@ -83,6 +84,12 @@ def draw_plan(path: str, walls: bool = True, furniture: bool = True,
         # 房间名那种小笔画：够深但很细，必须被厚度过滤掉
         for x in range(200, 260, 12):
             draw.rectangle((x, 250, x + 4, 250 + TEXT_PX), fill=(WALL_INK,) * 3)
+    if hatch:
+        # 地板/瓷砖那种密集排线：短线（约 667mm）+ 密间距（20mm），应被清理掉
+        colour = (LINE_INK,) * 3
+        for index in range(40):
+            y = 80 + 3 * index
+            draw.line([(120, y), (220, y)], fill=colour, width=1)
     image.save(path)
     return path
 
@@ -235,6 +242,54 @@ class WallExtractionTests(unittest.TestCase):
         _, tinted = run_cli([coloured, "--px-per-mm", "0.15"])
         self.assertEqual(tinted["wall_segments"], base["wall_segments"])
         self.assertGreaterEqual(tinted["wall_mask_coverage"], 0.9)
+
+    def test_trace_cleaning_reduces_clutter(self) -> None:
+        """清理后线work 条数应明显下降，而墙/房间不受影响"""
+        path = draw_plan(os.path.join(self.tmp, "hatched.png"), hatch=True)
+        _, raw = run_cli([path, "--px-per-mm", "0.15", "--no-trace-clean"])
+        _, cleaned = run_cli([path, "--px-per-mm", "0.15"])
+        self.assertLess(cleaned["trace_segments"], raw["trace_segments"])
+        self.assertGreater(cleaned["trace_removed_short"] + cleaned["trace_removed_dense"], 0)
+        self.assertEqual(cleaned["trace_clean_basis"], "mm")
+        self.assertEqual(cleaned["wall_segments"], raw["wall_segments"])
+        self.assertEqual(cleaned["rooms"], raw["rooms"])
+
+
+class TraceCleaningTests(unittest.TestCase):
+    """clean_trace 的单元测试：长而稀疏的家具轮廓要留住，短笔画与密排纹理要删掉"""
+
+    def _segment(self, orient, offset, start, end):
+        return {"orient": orient, "offset": offset, "start": start, "end": end,
+                "length": end - start, "thickness": None}
+
+    def test_unit_removal_rules(self) -> None:
+        scale = 0.15                      # 0.15 px/mm → 1mm 约 0.15px
+        mm = lambda value: value * scale  # 毫米 → 像素
+        furniture = [
+            self._segment("H", mm(1000), mm(1000), mm(2000)),
+            self._segment("H", mm(2000), mm(1000), mm(2000)),
+            self._segment("V", mm(1000), mm(1000), mm(2000)),
+            self._segment("V", mm(2000), mm(1000), mm(2000)),
+        ]                                  # 家具：1000mm 边长、彼此相距 1000mm
+        # 密排纹理：间距 20mm（真实地板/瓷砖纹理就是这种间距量级）
+        texture = [self._segment("H", mm(3000 + 20 * i), mm(3000), mm(3400)) for i in range(30)]
+        text = [self._segment("H", mm(5000), mm(5000 + 120 * i), mm(5000 + 120 * i + 100))
+                for i in range(10)]        # 文字笔画：100mm 长
+
+        kept, short_removed, dense_removed = iw.clean_trace(furniture + texture + text, scale)
+        self.assertEqual(short_removed, len(text))
+        self.assertGreaterEqual(dense_removed, len(texture) - 12)   # 纹理块边缘线邻居偏少
+        for segment in furniture:                                   # 家具长边必须全部保留
+            self.assertIn(segment, kept)
+        # 纹理块最外侧几条邻居不足会留下，这是可接受的：规则只承诺清掉密集区
+        self.assertLessEqual(len(kept) - len(furniture), 12)
+
+    def test_disable_cleaning_keeps_everything(self) -> None:
+        segments = [self._segment("H", 10, 0, 5), self._segment("H", 20, 0, 5)]
+        kept, short_removed, dense_removed = iw.clean_trace(segments, 1.0, min_mm=0,
+                                                           dense_len_mm=0)
+        self.assertEqual(len(kept), 2)
+        self.assertEqual((short_removed, dense_removed), (0, 0))
 
 
 if __name__ == "__main__":
