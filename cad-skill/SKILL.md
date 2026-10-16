@@ -84,8 +84,14 @@ python3 scripts/wall_plan.py plan.json --pretty
 
 ## 从图片描图
 
-线稿/扫描件可以用 `scripts/image_to_calls.py` 矢量化，输出 `plan.json`（墙中心线 + 厚度 + 洞口）
-或 DXF，再接上面同一条落图链路。三条铁律：
+先分清图是什么，两个脚本的分工不能混：
+
+| 图 | 脚本 | 输出 |
+| --- | --- | --- |
+| 线稿 / 扫描平面图 | `scripts/image_to_calls.py` | `plan.json`（墙中心线 + 厚度 + 洞口）、调用序列、DXF |
+| logo / 图标 / 实心图形 | `scripts/image_to_vector.py` | SVG（even-odd 填充）或多边形 + 填充的 DXF（`--hatch`） |
+
+线稿走这一条：矢量化出 `plan.json` 后接上面同一条落图链路。三条铁律：
 
 1. **必须先标定**：`--px-per-mm` 或 `--calibrate "x1,y1 x2,y2" --real 12000`，再给 `--origin`；
    没有单位就只能输出像素坐标（`--mode lines` 可以，`--mode walls` 会被拒绝）。

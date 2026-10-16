@@ -61,6 +61,10 @@ cross-machine use still wants the MCP server. 13 offline tests
 by tests: 8/8 walls and 10/10 openings on a clean render, 7/8 and 8/10 on a noisy,
 0.5°-rotated scan.
 
+`scripts/image_to_vector.py` covers the other half of raster work — solid shapes, logos and
+stroke text — by tracing outer contours plus holes into an even-odd filled SVG or a DXF
+with island-aware hatches, reporting area ratio and IoU against the source image.
+
 ### `cad-mcp/` — local copy of the CAD-MCP server (patched)
 
 Vendored copy of [CAD-MCP](https://github.com/daobataotie/CAD-MCP) v2.0 (MIT, `LICENSE`
