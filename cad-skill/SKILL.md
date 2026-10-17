@@ -55,6 +55,7 @@ macOS 装了 CADCraft 时可以直接画图；Linux 仍只能用 `plan_render.py
 | 想要一份照抄就能跑通的两居室示例 | `assets/example-two-bedroom/`（`plan.json` + `runbook.md`） |
 | 手上是图片/扫描件，想转 DXF | `references/image-to-dxf.md`（用法）+ `references/image-vectorize.md`（算法） |
 | 图片有背景网格/碎线，想做前后 DXF 对比 | `references/image-to-dxf.md` + `scripts/dxf_overlay_compare.py` |
+| 要用带真值的图片复测墙体/洞口识别 | `references/image-benchmark.md` + `tests/run_image_benchmark.py` |
 | 想了解商用 image → DWG/DXF 的技术架构 | `references/commercial-image-to-dxf.md` |
 | 字体、标注样式、字高与比例 | `references/annotation-defaults.md` |
 | 想知道这轮优化做了什么、哪些暂缓 | `references/roadmap.md` |

@@ -145,38 +145,119 @@ def door_geometry_mm(wall, opening):
 def compare(truth: list, found: list, axis_tol: float = 60) -> dict:
     """真值 vs 识别结果：墙召回、轴/厚度误差、洞口召回与误差、类型命中"""
     metrics = {"walls_matched": 0, "walls_extra": 0, "axis": [], "thickness": [],
-               "openings_hit": 0, "openings_total": 0, "types_ok": 0,
+               "openings_hit": 0, "openings_total": 0, "openings_found": 0,
+               "types_ok": 0,
                "width_err": [], "pos_err": []}
+    metrics["openings_total"] = sum(len(wall["openings"]) for wall in truth)
+    metrics["openings_found"] = sum(len(wall["openings"]) for wall in found)
+
+    def match_candidates(candidates: list[list[tuple[float, int]]]) -> dict[int, int]:
+        matched_found: dict[int, int] = {}
+
+        def assign(gt_index: int, seen: set[int]) -> bool:
+            for _, found_index in candidates[gt_index]:
+                if found_index in seen:
+                    continue
+                seen.add(found_index)
+                previous = matched_found.get(found_index)
+                if previous is None or assign(previous, seen):
+                    matched_found[found_index] = gt_index
+                    return True
+            return False
+
+        for gt_index, matches in enumerate(candidates):
+            matches.sort(key=lambda match: match[0], reverse=True)
+            assign(gt_index, set())
+        return matched_found
+
+    candidates = []
     for gt_wall in truth:
-        best = None
-        for wall in found:
+        matches = []
+        for found_index, wall in enumerate(found):
             if wall["o"] != gt_wall["o"] or abs(wall["offset"] - gt_wall["offset"]) > axis_tol:
                 continue
             overlap = min(wall["e"], gt_wall["e"]) - max(wall["s"], gt_wall["s"])
             if overlap <= 0:
                 continue
-            score = overlap / (gt_wall["e"] - gt_wall["s"])
-            if best is None or score > best[0]:
-                best = (score, wall)
-        if best is None:
+            truth_coverage = overlap / (gt_wall["e"] - gt_wall["s"])
+            found_coverage = overlap / (wall["e"] - wall["s"])
+            if truth_coverage < 0.5 or found_coverage < 0.5:
+                continue
+            score = min(truth_coverage, found_coverage)
+            matches.append((score, found_index))
+        candidates.append(matches)
+
+    matched_walls = match_candidates(candidates)
+
+    for gt_index, gt_wall in enumerate(truth):
+        found_index = next((index for index, matched_gt in matched_walls.items()
+                            if matched_gt == gt_index), -1)
+        if found_index < 0:
             continue
+        wall = found[found_index]
         metrics["walls_matched"] += 1
-        wall = best[1]
         metrics["axis"].append(abs(wall["offset"] - gt_wall["offset"]))
         metrics["thickness"].append(abs(wall["t"] - gt_wall["t"]))
-        for kind, width, position in gt_wall["openings"]:
-            metrics["openings_total"] += 1
-            near = [op for op in wall["openings"] if abs(op[2] - position) < 250]
-            if not near:
-                continue
+        truth_openings = gt_wall["openings"]
+        found_openings = wall["openings"]
+        opening_candidates = [
+            [(-abs(found_opening[2] - truth_opening[2]), found_index)
+             for found_index, found_opening in enumerate(found_openings)
+             if abs(found_opening[2] - truth_opening[2]) < 250]
+            for truth_opening in truth_openings
+        ]
+        matched_openings = match_candidates(opening_candidates)
+        for found_index, gt_index in matched_openings.items():
+            kind, width, position = truth_openings[gt_index]
+            found_kind, found_width, found_position = found_openings[found_index]
             metrics["openings_hit"] += 1
-            metrics["types_ok"] += (near[0][0] == kind)
-            metrics["width_err"].append(abs(near[0][1] - width))
-            metrics["pos_err"].append(abs(near[0][2] - position))
-    metrics["walls_extra"] = len(found) - metrics["walls_matched"]
+            metrics["types_ok"] += (found_kind == kind)
+            metrics["width_err"].append(abs(found_width - width))
+            metrics["pos_err"].append(abs(found_position - position))
+    metrics["walls_extra"] = max(0, len(found) - metrics["walls_matched"])
     for key in ("axis", "thickness", "width_err", "pos_err"):
         metrics[key] = max(metrics[key]) if metrics[key] else 0.0
     return metrics
+
+
+class CompareMatchingTests(unittest.TestCase):
+    def test_predicted_wall_matches_at_most_one_truth_wall(self) -> None:
+        wall = {"o": "H", "offset": 0, "s": 0, "e": 100, "t": 200,
+                "openings": []}
+
+        metrics = compare([dict(wall), dict(wall)], [dict(wall)])
+
+        self.assertEqual(metrics["walls_matched"], 1)
+        self.assertEqual(metrics["walls_extra"], 0)
+
+    def test_tiny_fragment_does_not_count_as_a_wall_match(self) -> None:
+        truth = {"o": "H", "offset": 0, "s": 0, "e": 1000, "t": 200,
+                 "openings": []}
+        fragment = dict(truth, e=1)
+
+        metrics = compare([truth], [fragment])
+
+        self.assertEqual(metrics["walls_matched"], 0)
+        self.assertEqual(metrics["walls_extra"], 1)
+
+    def test_predicted_opening_matches_at_most_one_truth_opening(self) -> None:
+        wall = {"o": "H", "offset": 0, "s": 0, "e": 100, "t": 200,
+                "openings": [("door", 900, 50), ("door", 900, 50)]}
+        found = dict(wall, openings=[("door", 900, 50)])
+
+        metrics = compare([wall], [found])
+
+        self.assertEqual(metrics["openings_total"], 2)
+        self.assertEqual(metrics["openings_hit"], 1)
+
+    def test_openings_on_unmatched_wall_count_as_missed(self) -> None:
+        wall = {"o": "H", "offset": 0, "s": 0, "e": 100, "t": 200,
+                "openings": [("door", 900, 50)]}
+
+        metrics = compare([wall], [])
+
+        self.assertEqual(metrics["openings_total"], 1)
+        self.assertEqual(metrics["openings_hit"], 0)
 
 
 @unittest.skipIf(cv2 is None or Image is None or np is None,

@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang='zh-CN'><head><meta charset='utf-8'>
+<title>codepad 打印稿</title>
+<style>
+@page { size: A4 portrait; margin: 14mm 12mm; }
+html, body { margin: 0; padding: 0; }
+:root {
+  --bg: #ffffff;
+  --fg: #1a1a1a;
+  --muted: #5b6169;
+  --rule-strong: #111111;
+  --rule-soft: #b9bdc3;
+  --num-fg: #8a9098;
+  --code-bg: #f6f7f8;
+  --code-border: #d7dade;
+  --inline-bg: #eef0f2;
+  --th-bg: #f0f1f3;
+  --quote-fg: #3d434a;
+  --page-bg: #e8e8e8;
+  --shadow: rgba(0, 0, 0, .18);
+  --link: #1155cc;
+}
+@font-face {
+  font-family: "SheetCJK";
+  src: local("Kaiti SC"), local("Kaiti TC"), local("STKaiti"), local("KaiTi"), local("AR PL UKai CN"), local("AR PL UKai TW"), local("AR PL UKai HK"), local("AR PL KaitiM GB"), local("TW-Kai");
+  unicode-range: U+2E80-2EFF, U+2F00-2FDF, U+3000-303F, U+31C0-31EF,
+                 U+3200-4DBF, U+4E00-9FFF, U+F900-FAFF, U+FE30-FE4F,
+                 U+FF00-FF60, U+FFE0-FFE6, U+20000-2FA1F;
+}
+
+body {
+  font-family: "Noto Sans Mono CJK SC", "Noto Sans Mono CJK TC", Menlo, Consolas, "Noto Color Emoji", "Apple Color Emoji", "Segoe UI Emoji", "JetBrainsMono Nerd Font", "DejaVu Sans Mono", "PingFang SC", "Microsoft YaHei", monospace;
+  font-size: 10.0pt;
+  line-height: 1.5;
+  color: var(--fg);
+  background: var(--bg);
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+/* 屏幕预览：一张白纸 + 与打印一致的页边距（@page 只在打印时生效）。 */
+@media screen {
+  html, body { background: var(--page-bg); }
+  body { padding: 10mm 0; }
+  .page {
+    width: 527.24pt;
+    margin: 0 auto;
+    padding: 39.69pt 34.02pt 39.69pt 34.02pt;
+    background: var(--bg);
+    box-shadow: 0 .3mm 1.2mm var(--shadow);
+  }
+  /* 多文件：两节之间留出空隙并画一条分页虚线（打印时每节本来就从新页开始，
+     屏幕上不分页，只能靠这条线把两个文件分开）。 */
+  .sheet + .sheet { margin-top: 10mm; padding-top: 6mm; border-top: .5pt dashed var(--rule-soft); }
+}
+@media print {
+  html, body { background: var(--bg); padding: 0; }
+  .page { width: auto; margin: 0; padding: 0; background: var(--bg); box-shadow: none; }
+}
+
+.doc-head { border-bottom: 1.6pt solid var(--rule-strong); padding-bottom: 3mm; margin-bottom: 4mm; }
+.doc-head h1 { font-size: 15.5pt; margin: 0 0 1.5mm 0; letter-spacing: .4pt; }
+.doc-head .meta { font-size: 10.0pt; color: var(--muted); }
+.sheet { break-before: page; page-break-before: always; }
+.sheet:first-of-type { break-before: auto; page-break-before: auto; }
+.file-head {
+  border-bottom: 1pt solid var(--rule-strong);
+  margin: 0 0 2.5mm 0;
+  padding-bottom: 1.5mm;
+  break-after: avoid;
+  page-break-after: avoid;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 4mm;
+}
+.file-head .name { font-size: 13.0pt; font-weight: bold; }
+.file-head .sub { font-size: 10.0pt; color: var(--muted); white-space: nowrap; }
+table.code { border-collapse: collapse; width: 100%; font-family: "SheetCJK", "Noto Sans Mono CJK SC", "Noto Sans Mono CJK TC", Menlo, Consolas, "Noto Color Emoji", "Apple Color Emoji", "Segoe UI Emoji", "JetBrainsMono Nerd Font", "DejaVu Sans Mono", "PingFang SC", "Microsoft YaHei", monospace; }
+table.code tr { break-inside: avoid; page-break-inside: avoid; }
+table.code td { vertical-align: top; padding: 0; }
+td.num {
+  width: 9mm;
+  text-align: right;
+  padding-right: 2.5mm !important;
+  color: var(--num-fg);
+  font-size: 9.4pt;
+  border-right: .4pt solid var(--rule-soft);
+}
+td.line { padding-left: 2.5mm !important; }
+td.line .ln { white-space: pre-wrap; overflow-wrap: anywhere; padding-left: 4mm; text-indent: -4mm; }
+pre.plain { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; font-family: "SheetCJK", "Noto Sans Mono CJK SC", "Noto Sans Mono CJK TC", Menlo, Consolas, "Noto Color Emoji", "Apple Color Emoji", "Segoe UI Emoji", "JetBrainsMono Nerd Font", "DejaVu Sans Mono", "PingFang SC", "Microsoft YaHei", monospace; font-size: 10.0pt; }
+
+/* Markdown 正文 */
+.md-body { font-size: 12.0pt; line-height: 1.6; }
+.md-body h1, .md-body h2, .md-body h3, .md-body h4, .md-body h5, .md-body h6 {
+  break-after: avoid; page-break-after: avoid; margin: 4mm 0 1.5mm 0; line-height: 1.3;
+}
+.md-body h1 { font-size: 15.5pt; border-bottom: 1pt solid var(--rule-strong); padding-bottom: 1mm; }
+.md-body h2 { font-size: 13.5pt; border-bottom: .5pt solid var(--rule-soft); padding-bottom: .8mm; }
+.md-body h3 { font-size: 12.0pt; }
+.md-body h4, .md-body h5, .md-body h6 { font-size: 12.0pt; }
+.md-body p { margin: 0 0 2mm 0; }
+.md-body ul, .md-body ol { margin: 0 0 2mm 0; padding-left: 6mm; }
+.md-body li { margin: 0 0 .8mm 0; }
+.md-body li > p { margin: 0; }
+.md-body pre {
+  background: var(--code-bg);
+  border: .5pt solid var(--code-border);
+  border-radius: 1mm;
+  padding: 2mm 2.5mm;
+  margin: 0 0 2.5mm 0;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+.md-body pre code {
+  font-family: "SheetCJK", "Noto Sans Mono CJK SC", "Noto Sans Mono CJK TC", Menlo, Consolas, "Noto Color Emoji", "Apple Color Emoji", "Segoe UI Emoji", "JetBrainsMono Nerd Font", "DejaVu Sans Mono", "PingFang SC", "Microsoft YaHei", monospace;
+  font-size: 10.0pt;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: none;
+  padding: 0;
+}
+.md-body code { font-family: "SheetCJK", "Noto Sans Mono CJK SC", "Noto Sans Mono CJK TC", Menlo, Consolas, "Noto Color Emoji", "Apple Color Emoji", "Segoe UI Emoji", "JetBrainsMono Nerd Font", "DejaVu Sans Mono", "PingFang SC", "Microsoft YaHei", monospace; font-size: 10.0pt; background: var(--inline-bg); padding: 0 .6mm; }
+.md-body blockquote {
+  margin: 0 0 2.5mm 0;
+  padding: 0 0 0 3mm;
+  border-left: 1.5pt solid var(--rule-soft);
+  color: var(--quote-fg);
+}
+.md-body table { border-collapse: collapse; width: 100%; margin: 0 0 2.5mm 0; font-size: 10.0pt; }
+.md-body th, .md-body td { border: .5pt solid var(--rule-soft); padding: 1mm 1.5mm; text-align: left; vertical-align: top; }
+.md-body th { background: var(--th-bg); }
+.md-body img { max-width: 100%; }
+.md-body a { color: var(--link); }
+.md-body hr { border: none; border-top: .5pt solid var(--rule-soft); margin: 3mm 0; }
+.md-body input[type=checkbox] { margin-right: 1mm; }
+
+.hl .k { color: #cf222e; }
+.hl .kt { color: #953800; }
+.hl .nb { color: #6639ba; }
+.hl .nf { color: #8250df; }
+.hl .nc { color: #953800; }
+.hl .s { color: #0a3069; }
+.hl .m { color: #0550ae; }
+.hl .o { color: #b35900; }
+.hl .a { color: #0969da; }
+.hl .c { color: #6e7781; }
+.hl .c i { font-family: "Noto Sans CJK SC Light", "Helvetica Neue", "Avenir Next", "SheetCJK", "Noto Sans Mono CJK SC", "Noto Sans Mono CJK TC", Menlo, Consolas, "Noto Color Emoji", "Apple Color Emoji", "Segoe UI Emoji", "JetBrainsMono Nerd Font", "DejaVu Sans Mono", "PingFang SC", "Microsoft YaHei", monospace; font-style: italic; font-weight: 300; }
+</style></head><body>
+<div class='page'>
+<header class='doc-head'><h1>codepad 打印稿</h1><div class='meta'>1 个文件 · 162 行 · 生成于 2026-10-17 17:19 · 行号对应源文件实际行号</div></header>
+<section class="sheet"><div class="file-head"><span class="name">commercial-image-to-dxf.md</span><span class="sub">Markdown</span></div><div class="md-body"><h1>商用 image → DWG/DXF 技术架构对比</h1>
+<blockquote>说明：本文基于公开产品形态、通用 CV/ML 工程实践和本 skill 的实测归纳， 不是对任何厂商内部实现的披露。不同产品、不同输入类型的差异很大。</blockquote>
+<h2>结论</h2>
+<p>商用 image → DWG/DXF 通常不是一个“图片进、DXF 出”的端到端模型，而是多阶段流水线：</p>
+<pre class="hl"><code class="language-text">图片<span class="o">/</span><span class="n">PDF</span>
+  → 图像归一化
+  → 矢量基元（线、弧、轮廓）
+  → 语义层（墙、门、窗、文字、尺寸）
+  → 约束求解与拓扑修复
+  → <span class="n">CAD</span> 实体 <span class="o">+</span> 图层 <span class="o">+</span> 单位
+  → 人工复核 <span class="o">/</span> 再训练</code></pre>
+<p>真正拉开差距的通常是：</p>
+<ol><li>大量“原图 + CAD 真值”数据；</li><li>墙、门、窗、文字的领域先验；</li><li>几何合并、吸附、拟合和拓扑修复；</li><li>置信度与人工修正流程；</li><li>对 PDF 矢量输入的特殊处理。</li></ol>
+<p>单个模型或矢量化库只是其中一环。</p>
+<h2>典型分层</h2>
+<table><thead><tr><th>阶段</th><th>常见做法</th><th>主要目标</th></tr></thead><tbody><tr><td>输入与预处理</td><td>纠偏、透视校正、去噪、二值化、分色、去背景网格、超分辨率、切图</td><td>让后续几何提取更稳定</td></tr><tr><td>几何提取</td><td>骨架化、轮廓追踪、Hough/LSD 直线检测、Douglas-Peucker 简化、RANSAC 拟合直线/圆/圆弧</td><td>得到线、弧、闭合轮廓</td></tr><tr><td>语义识别</td><td>语义分割找墙/房间/家具，目标检测找门窗/符号，OCR 找房间名和尺寸</td><td>从“线”变成“构件”</td></tr><tr><td>几何重建</td><td>墙线配对成中心线+厚度，洞口从封边线/墙带缺口推断，门窗符号识别，墙节点求交</td><td>得到可编辑的 CAD 几何</td></tr><tr><td>约束修复</td><td>正交/45°吸附、共线合并、端点吸合、墙厚统一、门窗宽度范围、尺寸链标定</td><td>让结果像 CAD，而不是描图</td></tr><tr><td>CAD 导出</td><td>写 <code>LINE/LWPOLYLINE/ARC/CIRCLE/HATCH/TEXT/INSERT</code>，分图层、颜色、线型、单位</td><td>变成可继续编辑的 DWG/DXF</td></tr><tr><td>质量闭环</td><td>置信度、待复核标记、人工修图界面、错误回流训练</td><td>把“能看”提升到“能用”</td></tr></tbody></table>
+<h2>输入类型决定难度</h2>
+<table><thead><tr><th>输入</th><th>典型技术</th><th>难度</th><th>说明</th></tr></thead><tbody><tr><td>CAD 导出的 PDF</td><td>解析 PDF 内容流，提取路径、文字和坐标，再映射到 DXF</td><td>低</td><td>本来就是矢量，精度可以很高；很多“效果惊艳”的案例属于这一类</td></tr><tr><td>PNG/JPG 线稿</td><td>二值化 + 矢量化 + 直线/圆弧拟合 + 语义重建</td><td>中</td><td>几何较干净，但仍有断线、碎线、文字轮廓</td></tr><tr><td>扫描件</td><td>上述流程 + 纠偏、去噪、去阴影、OCR</td><td>高</td><td>噪声、倾斜、线宽变化会直接影响墙厚和洞口</td></tr><tr><td>照片/效果图</td><td>透视校正、颜色分离、分割模型、遮挡处理</td><td>很高</td><td>阴影、纹理、家具遮挡会让墙体识别不稳定</td></tr></tbody></table>
+<p>所以评估商用服务时，先确认它处理的是 <strong>PDF 矢量</strong> 还是 <strong>真正的栅格图片</strong>， 两者不是同一难度级别。</p>
+<h2>商用效果好的原因</h2>
+<h3>1. 领域先验很重</h3>
+<p>平面图不是任意图形：</p>
+<ul><li>墙通常正交；</li><li>墙厚在有限范围；</li><li>门宽常见 700–1000mm；</li><li>窗有固定画法；</li><li>房间名有固定字高；</li><li>尺寸链可以提供比例标定。</li></ul>
+<p>把这些规则写进后处理，通常比单纯换更大的模型更能提升“像 CAD”的程度。</p>
+<h3>2. 训练数据是核心资产</h3>
+<p>高质量系统通常有大量成对数据，并用 CAD 批量渲染生成合成样本：</p>
+<ul><li>改墙厚、开间、门窗位置；</li><li>换字体、线宽、填充；</li><li>加扫描噪声、模糊、旋转、透视；</li><li>自动得到像素级标注。</li></ul>
+<p>这类数据规模和标注一致性，是普通开源工具很难直接复制的。</p>
+<h3>3. 输出经过大量清理</h3>
+<p>商用结果通常不会“把每个墨迹描一遍”，而会：</p>
+<ul><li>合并碎线；</li><li>拉直墙线；</li><li>统一墙厚；</li><li>补节点和转角；</li><li>识别门窗；</li><li>把文字变成可编辑 <code>TEXT</code>；</li><li>把重复门窗变成图块。</li></ul>
+<p>看起来干净，很大一部分来自规则和人工修正。</p>
+<h3>4. 有人工复核环节</h3>
+<p>不少商用服务后台有审核/修图流程，或提供交互式修正界面。 宣传图通常是修过的最终结果，不是模型一次输出的原始结果。</p>
+<h3>5. DWG 导出是成熟工程</h3>
+<p>DXF 可以直接用 <code>ezdxf</code> 等库写；DWG 通常通过 ODA SDK、RealDWG 或格式转换器完成。 这部分不是识别难点，难点在几何和语义。</p>
+<h2>端到端模型的边界</h2>
+<p>学术上有 image-to-CAD、sketch-to-CAD、CAD 序列生成等方向，但平面图转 DXF 对尺寸精度、单位、图层和可编辑性要求很高。纯端到端模型容易出现：</p>
+<ul><li>线看起来对，但端点不闭合；</li><li>圆变成折线；</li><li>文字变成轮廓；</li><li>墙厚不统一；</li><li>门窗语义丢失；</li><li>无法保证毫米单位。</li></ul>
+<p>因此商用系统更常见的是“CV/ML 提候选 + 规则重建 + 人工确认”， 而不是一个大模型直接输出最终 DXF。</p>
+<h2>与本 skill 的差距</h2>
+<p>现有链路已经具备：</p>
+<ul><li>骨架/轮廓混合描线；</li><li>Hough 墙配对；</li><li>门窗洞口推断；</li><li>OCR 文本层；</li><li>图层和 DXF 输出；</li><li>背景网格去除、共线/端点吸附、前后叠加对比。</li></ul>
+<p>与商用系统的主要差距通常是：</p>
+<ol><li>缺少墙/门/窗的语义分割模型；</li><li>缺少大规模真实图纸评测集；</li><li>圆弧拟合和符号识别还不够；</li><li>缺少尺寸链自动标定；</li><li>缺少置信度与人工修正界面；</li><li>对扫描件、照片、复杂填充图的鲁棒性有限。</li></ol>
+<p>如果继续往商用方向走，建议优先级：</p>
+<ol><li>建几十到几百张真实图纸的评测集，固定墙/洞口/文字/尺寸指标；</li><li>用合成数据训练墙体和门窗分割；</li><li>把分割结果交给现有几何重建和约束修复；</li><li>给每个推断结果打置信度，低置信度进入人工复核；</li><li>最后再考虑端到端模型。</li></ol>
+<h2>评估商用服务的检查清单</h2>
+<p>不要只看宣传图，重点检查导出的 DXF/DWG：</p>
+<ul><li>单位是否正确（<code>$INSUNITS</code> 或图纸单位）；</li><li>墙是闭合多段线、矩形，还是大量单线；</li><li>圆和圆弧是否保留为 <code>ARC/CIRCLE</code>，还是被折线化；</li><li>文字是否是可编辑 <code>TEXT/MTEXT</code>，还是笔画轮廓；</li><li>门窗是否分图层、是否有块或语义对象；</li><li>是否存在大量重复线、断头、未闭合节点；</li><li>图层、颜色、线型是否符合后续制图习惯；</li><li>是否包含原图底图或只包含矢量；</li><li>结果是否需要人工清理，清理成本是多少。</li></ul>
+<p>一句话：<strong>商用 image-to-DXF 的核心是“几何流水线 + 领域语义 + 数据闭环”， 不是单一模型；PDF 矢量输入和人工修图，往往比宣传里看起来的 AI 占比更大。</strong></p></div></section>
+</div>
+</body></html>
