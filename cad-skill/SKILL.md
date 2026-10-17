@@ -1,16 +1,17 @@
 ---
 name: cad-skill
-description: 直接通过 Windows COM（pywin32）在本机 CAD（AutoCAD / 浩辰 / 中望）里绘图、查图、改图：把设计意图拆成图元调用，用脚本批量落图，产出可继续编辑的 DWG/DXF。用于建筑 / 室内 / 规划的平面示意、轴网、墙门窗、家具示意、文字标注、图层组织，以及“先确认方案、再分步落图”的制图流程；不做施工图深度、结构节点详图、BIM 或规范审查。
+description: 直接驱动本机 CAD（Windows 上的 AutoCAD / 浩辰 / 中望 COM，或 macOS / Linux 上的 CADCraft）绘图、查图、改图：把设计意图拆成图元调用，用脚本批量落图，打开与保存可继续编辑的 DWG/DXF。用于建筑 / 室内 / 规划的平面示意、轴网、墙门窗、家具示意、文字标注、图层组织，以及“先确认方案、再分步落图”的制图流程；不做施工图深度、结构节点详图、BIM 或规范审查。
 metadata:
-  short-description: 自然语言驱动 CAD 出图（直连 COM）
+  short-description: 自然语言驱动 CAD 出图（COM / CADCraft）
 ---
 
-# CAD 绘图（直连 COM）
+# CAD 绘图（Windows COM / CADCraft）
 
-链路只有一条：**用户负责设计 → Codex 拆成图元调用 → `scripts/cad_direct.py` → 本机 CAD 真正画图 → 存 DWG/DXF**。
+链路固定为：**用户负责设计 → Codex 拆成图元调用 → `scripts/cad_direct.py` → Windows COM 或 CADCraft → DWG/DXF**。
 
-驱动层是 `vendor/cad_core.py`，只依赖 **pywin32**（截图另需 Pillow）。没有服务端、没有协议层、
-也不需要任何客户端注册；`cad_direct.py` 每次运行就是一个普通 Python 进程，直连当前登录会话里的 CAD。
+Windows 驱动层是 `vendor/cad_core.py`，只依赖 **pywin32**（截图另需 Pillow）。
+macOS / Linux 驱动层是 `scripts/cadcraft_direct.py`，通过 CADCraft 本机控制端口操作当前图纸。
+`cad_direct.py` 每次运行就是一个普通 Python 进程，不需要客户端注册。
 
 CAD 只提供基础图元（线/圆/弧/多段线/矩形/文字/填充/标注）+ 查询/编辑/图层/图纸管理。
 **没有**墙、门、窗、家具、轴网、拉伸、联动改图这类专业对象——建筑构件全靠图元组合。
@@ -21,13 +22,14 @@ CAD 只提供基础图元（线/圆/弧/多段线/矩形/文字/填充/标注）
 
 - **Windows COM**：CAD 与 Codex 同机、同一交互式桌面会话；已安装并激活
   AutoCAD / 浩辰（GstarCAD、GCAD）/ 中望（ZWCAD）；`pip install pywin32 Pillow`。
-- **macOS CADCraft**：安装 CADCraft 0.7+，用 `--control <port>` 启动；
-  `cad_direct.py --cad-type CADCRAFT` 通过本机 JSON 控制端口绘图，不需要 pywin32。
+- **macOS / Linux CADCraft**：安装 CADCraft 0.7+，用 `--control <port>` 启动；
+  通过本机 JSON 控制端口绘图、打开和保存 DWG/DXF，不需要 pywin32。
 - Python 3.10+；截图另需 Pillow（CADCraft 用自身渲染，不依赖 Pillow）。
 - 环境、启动与排障见 `references/setup-windows.md`。
 
-macOS 装了 CADCraft 时可以直接画图；Linux 仍只能用 `plan_render.py` 产出 DXF / SVG / `.scr`，
-或交付布局方案与坐标表，不能描述成“已经画好”。
+macOS / Linux 检测到 CADCraft 时默认使用 `CADCRAFT` 后端；可用 `CADCRAFT_BINARY`
+指定可执行文件、`CADCRAFT_CONTROL_PORT` 指定端口，也可显式传 `--cad-type CADCRAFT`。
+没有可用 CAD 时仍可交付 DXF / SVG / `.scr` 与坐标表，但不能描述成“已经画好”。
 
 ## 铁律
 
@@ -44,12 +46,13 @@ macOS 装了 CADCraft 时可以直接画图；Linux 仍只能用 `plan_render.py
 
 | 情况 | 读 |
 | --- | --- |
-| 还没接入 CAD、Windows 环境、启动与排障 | `references/setup-windows.md` |
+| 还没接入 CAD、Windows / CADCraft 环境、启动与排障 | `references/setup-windows.md` |
 | 要确认调用参数、JSON 结构、支持的图元 | `references/call-schema.md` |
 | 要用命令行查图、改图、截图、保存 | `references/direct-cli.md` + `scripts/cad_direct.py` |
 | 画建筑平面：图层、构件画法、分步顺序、Prompt 模板 | `references/drafting-conventions.md` |
 | 直墙带洞口（门/窗）的坐标容易算错 | 先跑 `scripts/wall_plan.py` 生成调用序列 |
 | 要轴网、自动尺寸、楼梯，或一次导出 calls/.scr/DXF/SVG | `references/plan-render.md` + `scripts/plan_render.py` |
+| 要用 DWG/DWT 模板和标准块原生出 DWG | `references/native-dwg-template.md` + `scripts/plan_native.py` |
 | 想在 Mac 上先审方案、不打开 CAD | `scripts/plan_render.py --out-svg preview.svg` |
 | 图元多、嫌慢，想选批量脚本还是 DXF | `references/performance.md` |
 | 想要一份照抄就能跑通的两居室示例 | `assets/example-two-bedroom/`（`plan.json` + `runbook.md`） |
@@ -82,12 +85,28 @@ cad_direct.py erase / move / copy / offset / mirror / rotate / scale
 全局参数：`--cad-type AUTOCAD|GCAD|GSTARCAD|ZWCAD|CADCRAFT`、`--output-dir <目录>`；
 CADCraft 另用 `--cadcraft-port` 指定控制端口。
 
-macOS + CADCraft：
+macOS / Linux + CADCraft：
 
 ```bash
-/Applications/CADCraft.app/Contents/MacOS/CADCraft --control 43210
+# Linux；macOS 可用 /Applications/CADCraft.app/Contents/MacOS/CADCraft --control 43210
+cadcraft --control 43210
+
+python3 scripts/cad_direct.py --cad-type CADCRAFT open --path /abs/plan.dwg
+python3 scripts/cad_direct.py --cad-type CADCRAFT stats
 python3 scripts/cad_direct.py --cad-type CADCRAFT draw --calls calls.json
 python3 scripts/cad_direct.py --cad-type CADCRAFT shot --out check.png
+python3 scripts/cad_direct.py --cad-type CADCRAFT save --path /abs/out.dwg
+```
+
+正式模板出图优先使用原生 DWG，不生成 DXF：
+
+```bash
+python3 scripts/plan_native.py plan.json \
+    --template /abs/template.dwt \
+    --output /abs/work.dwg \
+    --door-block-ccw DOOR_900_CCW \
+    --door-block-cw DOOR_900_CW \
+    --window-block WINDOW_1200
 ```
 
 坐标一律 `[x, y]`（可带 z）；绘图命令返回实体句柄，改图先用 `entities` 拿 handle。

@@ -19,15 +19,32 @@ import base64
 import json
 import math
 import os
+import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 DEFAULT_PORT = int(os.environ.get("CADCRAFT_CONTROL_PORT", "43210"))
-DEFAULT_APP = os.environ.get(
-    "CADCRAFT_BINARY", "/Applications/CADCraft.app/Contents/MacOS/CADCraft")
+MACOS_APP = "/Applications/CADCraft.app/Contents/MacOS/CADCraft"
+
+
+def find_binary() -> Optional[str]:
+    """查找当前系统的 CADCraft 可执行文件；环境变量优先。"""
+    explicit = os.environ.get("CADCRAFT_BINARY")
+    if explicit:
+        return os.path.abspath(os.path.expanduser(explicit))
+    candidates = (
+        MACOS_APP,
+        shutil.which("cadcraft"),
+        shutil.which("CADCraft"),
+    )
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate):
+            return candidate
+    return None
 
 
 class CADCraftError(RuntimeError):
@@ -90,6 +107,10 @@ def _friendly_type(value: str) -> str:
 
 class CADCraftController:
     """通过 CADCraft 本地控制端口操作当前图纸。"""
+
+    @staticmethod
+    def find_binary() -> Optional[str]:
+        return find_binary()
 
     def __init__(self, host: str = "127.0.0.1", port: Optional[int] = None,
                  launch: bool = True, startup_timeout: float = 15.0,
@@ -170,7 +191,8 @@ class CADCraftController:
             return True
         if not self.launch:
             return False
-        if not os.path.exists(DEFAULT_APP):
+        binary = find_binary()
+        if not binary:
             return False
         log_path = os.path.join(tempfile.gettempdir(), "cadcraft-control.log")
         log = open(log_path, "a", encoding="utf-8")
@@ -178,7 +200,7 @@ class CADCraftController:
             env = dict(os.environ)
             env.setdefault("CADCRAFT_CONTROL_PORT", str(self.port))
             subprocess.Popen(
-                [DEFAULT_APP, "--control", str(self.port)],
+                [binary, "--control", str(self.port)],
                 env=env, stdout=log, stderr=subprocess.STDOUT,
                 start_new_session=True)
         except OSError:
@@ -191,6 +213,13 @@ class CADCraftController:
                 return True
             time.sleep(0.25)
         return False
+
+    @classmethod
+    def launch_hint(cls, port: int = DEFAULT_PORT) -> str:
+        binary = cls.find_binary()
+        if not binary:
+            binary = MACOS_APP if sys.platform == "darwin" else "cadcraft"
+        return "`%s --control %d`" % (binary, port)
 
     def close(self) -> None:
         self._close_socket()
@@ -347,6 +376,68 @@ class CADCraftController:
             except Exception:
                 pass
             raise
+
+    # ------------------------------------------------------------ blocks
+
+    def list_blocks(self) -> List[Dict[str, Any]]:
+        result = self.call("engine.execute", {
+            "command": "blocks.list",
+            "params": {},
+        })
+        return result.get("blocks", []) if isinstance(result, dict) else []
+
+    def create_block(self, name: str, base, handles: Sequence[str],
+                     keep: str = "convert",
+                     description: str = "") -> Dict[str, Any]:
+        result = self.call("engine.execute", {
+            "command": "block",
+            "params": {
+                "name": name,
+                "base": _point(base),
+                "handles": list(handles),
+                "keep": keep,
+                "description": description,
+            },
+        })
+        return result if isinstance(result, dict) else {"result": result}
+
+    def insert_block(self, name: str, at, scale=1.0, rotation: float = 0.0,
+                     file: Optional[str] = None, attribs: Optional[Dict[str, str]] = None,
+                     explode: bool = False):
+        params: Dict[str, Any] = {
+            "name": name,
+            "at": _point(at),
+            "scale": scale,
+            "rotation": float(rotation),
+            "explode": bool(explode),
+        }
+        if file:
+            params["file"] = os.path.abspath(os.path.expanduser(file))
+        if attribs:
+            params["attribs"] = attribs
+        result = self.call("engine.execute", {
+            "command": "insert",
+            "params": params,
+        })
+        handle = result.get("handle") if isinstance(result, dict) else None
+        if not handle:
+            raise CADCraftError("CADCraft 块插入没有返回句柄")
+        return CADCraftEntity(handle)
+
+    def block_count(self, space: str = "all", nested: bool = True) -> Dict[str, Any]:
+        result = self.call("engine.execute", {
+            "command": "countlist",
+            "params": {"space": space, "nested": bool(nested)},
+        })
+        return result if isinstance(result, dict) else {}
+
+    def set_block_attributes(self, handle: str,
+                             values: Dict[str, str]) -> Dict[str, Any]:
+        result = self.call("engine.execute", {
+            "command": "attedit",
+            "params": {"handle": str(handle), "values": values},
+        })
+        return result if isinstance(result, dict) else {}
 
     def add_dimension(self, start_point, end_point, text_position=None,
                       textheight: float = 5, layer=None, color=None):

@@ -55,7 +55,7 @@ Layers
 
 | Control | Action |
 |---|---|
-| **Endpoint** field | Type `host:port`; Enter applies it (and re-points a running proxy) and saves it. Opens focused, with the old value selected |
+| **Endpoint** field | Shows the address in play (see below); type `host:port` to replace it, Enter applies it (and re-points a running proxy) and saves it. Opens focused, with the current value selected |
 | **System proxy** switch | `proxyctl on --address <configured>` or `proxyctl off` |
 | **TUN mode** switch | `proxyctl tun on --address <endpoint>` / `proxyctl tun off` |
 | **Clear** | `proxyctl off`, `proxyctl tun off` while mihomo runs, and forget the remembered address |
@@ -72,6 +72,15 @@ path any more.
 `~/.config/omarchy/shell.json` through Omarchy's `updateEntryInline`, so the
 settings panel sees the same value. An address typed but not applied is
 ignored; a malformed one is refused and the field turns urgent.
+
+The field holds the address in play, not a default: the running per-app
+endpoint first, then the address this widget remembers, then — while TUN is
+carrying traffic — the upstream mihomo is pointed at, which is the only address
+in use when the per-app proxy is off. Nothing else is invented, so a widget that
+remembers nothing and has no proxy running opens with an empty field and the
+caption `No endpoint yet` rather than with a built-in address from some other
+network. The field follows that address until you start typing in it; a draft is
+never overwritten behind your back.
 
 ## Clearing every endpoint
 

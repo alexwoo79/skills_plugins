@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as Commons
 
 // One "label   value" line inside the codePad panel. Values wrap instead of
 // eliding: an export path or an error message is the one thing the user needs
@@ -9,8 +10,8 @@ Item {
 
   property string label: ""
   property string value: ""
-  property color labelColor: Color.foreground
-  property color valueColor: Color.foreground
+  property color labelColor: Commons.Color.foreground
+  property color valueColor: Commons.Color.foreground
   property string fontFamily: Style.font.family
   property real fontSize: Style.font.body
   property real labelWidth: Style.space(58)

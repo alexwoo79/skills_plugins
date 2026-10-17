@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "Model.js" as Model
 
@@ -65,9 +66,9 @@ BarWidget {
   readonly property bool opened: root.popupOpen
   readonly property bool popoutSwitchClosing: false
 
-  readonly property color foreground: bar ? bar.barForeground : Color.foreground
+  readonly property color foreground: bar ? bar.barForeground : Commons.Color.foreground
   readonly property color dimColor: Qt.darker(root.foreground, 1.5)
-  readonly property color urgentColor: bar ? bar.urgent : Color.urgent
+  readonly property color urgentColor: bar ? bar.urgent : Commons.Color.urgent
   readonly property color successColor: "#a3be8c"
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property string label: Model.barLabel(root.exporting, root.files.length, root.statusError)
