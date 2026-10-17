@@ -3,11 +3,14 @@
 定位：**描图助手**。它把栅格图变成"候选几何"，语义（这条是墙、那是门）仍然靠人确认。
 不要把扫描的照片、手绘草图直接送进来期待成套平面图。
 
+> 怎么用、参数怎么调、输出什么图层、出错怎么办：见 `references/image-to-dxf.md`。
+> 本文只讲算法与实测数据。
+
 两条路线，先分清图是什么：
 
 | 图是什么 | 用哪个脚本 | 出什么 |
 | --- | --- | --- |
-| 双线线稿（CAD 导出） | `image_to_calls.py` | `plan.json`（墙中心线 + 厚度 + 洞口）、调用序列、DXF |
+| 双线线稿（CAD 导出） | `image_to_calls.py` | 默认单线 DXF（A-SKETCH/A-TEXT）；`--mode walls` 才出 plan.json/洞口 |
 | 实心厚墙平面图（家装/售楼图） | `image_to_walls.py` | DXF（墙体矩形 + 线work 分层）、`plan.json`（仅墙） |
 | 实心图形（logo、图标、笔画文字） | `image_to_vector.py` | SVG（even-odd 填充）或多边形 + 填充的 DXF |
 
@@ -15,10 +18,10 @@
 实心图形走**轮廓描摹**。拿错脚本只会得到一堆碎线或错误的墙。
 
 ```text
-线稿图片 → 标定（两点 + 真实距离）→ 矢量化 → plan.json（墙中心线 + 厚度 + 洞口）
-                                                 ├→ calls.json → cad_direct.py draw / script
-                                                 └→ trace.dxf  → CAD 打开另存 DWG
-                                     ↘ 预览 PNG（人工确认，这一步不能省）
+线稿图片 → 标定（可选）→ 矢量化
+                        ├→ 默认 hybrid：单线 DXF（A-SKETCH / A-TEXT）
+                        └→ --mode walls：plan.json → calls.json / .scr / 结构化 DXF
+              ↘ 预览 PNG（结构化模式必须人工确认）
 ```
 
 ## 混合描线（默认 lines 模式）
@@ -60,9 +63,10 @@ pip install opencv-python-headless ezdxf     # 只在跑转换的这一侧需要
 | 扫描件（有噪声、轻微倾斜） | 可用但需修补：开 `--deskew --adaptive --despeckle`，召回下降一档 |
 | 照片（透视、阴影、手绘） | 不要用：先纠正投影去阴影，或者干脆当底图人工描 |
 
-## 标定（必需）
+## 标定（推荐；不标定则输出像素）
 
-图像没有单位，不标定就只能输出像素坐标。两种方式：
+图像没有单位。不标定也能出 DXF，但坐标是像素（`$INSUNITS=0`），不要当成毫米。
+两种方式：
 
 ```bash
 # 方式一：直接给比例

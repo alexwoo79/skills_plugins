@@ -56,11 +56,14 @@ edits …), so a single skill folder is enough. There is no server, port or clie
 (`python3 -m pytest cad-skill/tests`) drive the CLI end to end against fake COM.
 `cad-skill/assets/example-two-bedroom/` holds a ready-to-run 96 m² two-bedroom example
 (8 walls, 10 openings → 63 entities) with a runbook that goes all the way to DWG.
-`scripts/image_to_calls.py` traces a raster line drawing into that same `plan.json`
-(wall centrelines + thickness + openings) or into a DXF, with measured accuracy locked
-by tests: 8/8 walls and 10/10 openings on a clean render, 7/8 and 8/10 on a noisy,
-0.5°-rotated scan. It also infers each door's hinge side and swing from the drawn arc, and
-detects straight-run stairs with `--stairs`.
+`scripts/image_to_calls.py` is the image→DXF entry point. By default it traces every
+stroke into single-line polylines (`A-SKETCH`), keeps the whole source drawing, and can
+turn labels into editable `A-TEXT` with `--ocr-text`; `--mode walls` instead extracts wall
+centrelines, openings and a `plan.json`. The full usage guide is
+`cad-skill/references/image-to-dxf.md`. Measured wall/opening accuracy stays locked by
+tests: 8/8 walls and 10/10 openings on a clean render, 7/8 and 8/10 on a noisy,
+0.5°-rotated scan. DXF output carries safe annotation defaults (TZ_HZ style with
+`txt.shx + gbcbig.shx`, 1:100, 3.5 mm paper text, architectural ticks).
 
 `scripts/image_to_vector.py` covers the other half of raster work — solid shapes, logos and
 stroke text — by tracing outer contours plus holes into an even-odd filled SVG or a DXF

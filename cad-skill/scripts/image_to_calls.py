@@ -1,21 +1,22 @@
 #!/usr/bin/env python3
-"""image_to_calls.py — 线稿栅格图 → 结构化墙线 / 图元调用序列 / DXF。
+"""image_to_calls.py — 图片 → DXF（默认忠实描线）/ 结构化墙体与洞口。
 
-定位：**描图助手，不是"照片变施工图"**。它做的是栅格→矢量（阈值、去噪、直线检测、
-共线合并、正交与网格吸附、平行线对合并成墙），语义仍要人判断：识别出的"门/窗"
-只是按洞口宽度的猜测，必须看预览图确认。
+默认（--mode lines --tracer hybrid）：
+  所有墨迹走 1px 骨架，一条笔画输出一条多段线；不推断墙体、不删图源元素。
+  --ocr-text 生成 A-TEXT；--solid-contours 才把粗区域走外轮廓。
 
-两种模式：
-  --mode walls  线稿 → plan.json（墙中心线 + 厚度 + 洞口），后续直接喂给
-                wall_plan.py / plan_to_scr.py / cad_direct.py —— 推荐
-  --mode lines  线稿 → 合并吸附后的线段（可选写 DXF，用 ezdxf，不需要装 CAD）
+结构化（--mode walls）：
+  平行线配对成墙，识别洞口与门开向，输出 plan.json / calls.json / 结构化 DXF。
 
-必须先标定，否则图像没有单位：
-  --px-per-mm 0.5                         直接给像素/毫米
-  --calibrate "x1,y1 x2,y2" --real 3600   指两个点 + 真实距离（毫米）
+标定（可选，但推荐）：
+  --px-per-mm 0.16686
+  --calibrate "x1,y1 x2,y2" --real 9800
+  未标定时输出像素坐标（$INSUNITS=0），不要冒充毫米。
 
 例：
-  python3 image_to_calls.py scan.png --mode walls --calibrate "120,80 1440,80" --real 12000 \
+  python3 image_to_calls.py plan.png --out-dxf plan.dxf
+  python3 image_to_calls.py plan.png --px-per-mm 0.16686 --ocr-text --out-dxf plan.dxf
+  python3 image_to_calls.py plan.png --mode walls --px-per-mm 0.16686 \
       --out-plan plan.json --out-calls calls.json --preview check.png
 """
 
@@ -853,7 +854,9 @@ def resolve_scale(args) -> Optional[float]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="线稿栅格图 → 忠实描线 DXF（默认）/ 墙体与洞口调用序列（--mode walls）")
+        description="线稿栅格图 → 忠实描线 DXF（默认）/ 墙体与洞口调用序列（--mode walls）",
+        epilog="hybrid 只使用 --max-side/--simplify/--solid-*/OCR/--scale/--paper-height；"
+               "墙/洞口与纠偏参数用于 --mode walls 或 --tracer hough。")
     parser.add_argument("image")
     parser.add_argument("--mode", choices=("walls", "lines"), default="lines",
                         help="lines（默认）= 忠实描线，保留所有检测到的线段；"
@@ -874,6 +877,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="hybrid + OCR：保留原文字笔画")
     parser.add_argument("--ocr-langs", default="zh-Hans,en-US",
                         help="hybrid OCR 语言（逗号分隔）")
+    parser.add_argument("--scale", type=float, default=100.0,
+                        help="hybrid：出图比例分母（默认 100，即 1:100）")
+    parser.add_argument("--paper-height", type=float, default=3.5,
+                        help="hybrid：纸面文字高度 mm（默认 3.5）")
     parser.add_argument("--px-per-mm", type=float, help="像素/毫米（标定方式一）")
     parser.add_argument("--calibrate", help='两个像素点 "x1,y1 x2,y2"（标定方式二）')
     parser.add_argument("--real", type=float, help="上述两点的真实距离（毫米）")
@@ -899,14 +906,18 @@ def build_parser() -> argparse.ArgumentParser:
                         help="未标定时的最短候选线（像素，默认 10）")
     parser.add_argument("--hough-threshold", type=int, default=40)
     parser.add_argument("--max-gap-px", type=float, default=4.0)
-    parser.add_argument("--adaptive", action="store_true", help="自适应阈值（扫描件/光照不均）")
-    parser.add_argument("--deskew", action="store_true", help="先纠偏")
-    parser.add_argument("--despeckle", action="store_true", help="中值去噪")
+    parser.add_argument("--adaptive", action="store_true",
+                        help="自适应阈值（仅 structured/hough；扫描件/光照不均）")
+    parser.add_argument("--deskew", action="store_true",
+                        help="先纠偏（仅 structured/hough）")
+    parser.add_argument("--despeckle", action="store_true",
+                        help="中值去噪（仅 structured/hough）")
     parser.add_argument("--stairs", action="store_true",
                         help="识别直跑楼梯并写入 plan.json（等距平行踏步线；默认只识别墙与洞口）")
     parser.add_argument("--out-plan", help="输出 plan.json")
     parser.add_argument("--out-calls", help="输出调用序列 JSON（复用 wall_plan.py 生成）")
-    parser.add_argument("--out-dxf", help="输出 DXF（写线段或墙矩形）")
+    parser.add_argument("--out-dxf",
+                        help="输出 DXF（默认单线骨架；walls 模式写结构化墙体/门窗）")
     parser.add_argument("--preview", help="输出叠加预览 PNG（务必人工确认）")
     parser.add_argument("--pretty", action="store_true")
     return parser
@@ -943,6 +954,7 @@ def main(argv=None) -> int:
                 simplify=args.simplify, ocr=args.ocr_text,
                 keep_text_strokes=args.keep_text_strokes,
                 solid_contours=args.solid_contours,
+                scale=args.scale, paper_text_height=args.paper_height,
                 languages=tuple(args.ocr_langs.split(",")),
                 px_per_mm=scale if calibrated else None,
                 out_dxf=args.out_dxf, overlay=args.preview)

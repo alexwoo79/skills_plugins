@@ -35,6 +35,7 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from image_to_walls import thin  # noqa: E402
+import annotation_defaults  # noqa: E402
 
 
 def _timed() -> float:
@@ -327,16 +328,18 @@ def render_overlay(image_path: str, thin_paths, solid_paths, texts,
 def write_dxf(path: str, thin_paths: List[List[Tuple[float, float]]],
               solid_paths: List[List[Tuple[float, float]]],
               texts: List[Dict[str, Any]], working_size: Tuple[int, int],
-              px_per_mm: Optional[float] = None) -> Dict[str, Any]:
+              px_per_mm: Optional[float] = None,
+              text_height: Optional[float] = None) -> Dict[str, Any]:
     import ezdxf
-    height, width = working_size
+    frame_h, _ = working_size
     ppm = px_per_mm or 1.0
 
     def point(x: float, y: float) -> Tuple[float, float]:
-        return (x / ppm, (height - y) / ppm)
+        return (x / ppm, (frame_h - y) / ppm)
 
     doc = ezdxf.new("R2010")
     doc.header["$INSUNITS"] = 4 if px_per_mm else 0
+    annotation_defaults.ensure_text_styles(doc)
     for name, color in (("A-SKETCH", 7), ("A-SOLID", 8), ("A-TEXT", 7)):
         if name not in doc.layers:
             doc.layers.new(name, dxfattribs={"color": color})
@@ -355,8 +358,10 @@ def write_dxf(path: str, thin_paths: List[List[Tuple[float, float]]],
         else:
             insert_px = (text["x"], text["y"] + text["h"])
         insert = point(*insert_px)
-        entity = model.add_text(text["text"], height=max(text["h"] / ppm, 0.5),
-                                dxfattribs={"layer": "A-TEXT", "rotation": rotation})
+        entity_height = text_height if text_height else max(text["h"] / ppm, 0.5)
+        entity = model.add_text(text["text"], height=entity_height,
+                                dxfattribs={"layer": "A-TEXT", "rotation": rotation,
+                                            "style": annotation_defaults.TEXT_STYLE})
         entity.set_placement(insert)
     doc.saveas(path)
     return {"path": path,
@@ -370,6 +375,8 @@ def trace(path: str, max_side: int = 2048, solid_px: float = 16.0,
           simplify: float = 1.2, ocr: bool = False,
           keep_text_strokes: bool = False,
           solid_contours: bool = False,
+          scale: float = annotation_defaults.SCALE,
+          paper_text_height: float = annotation_defaults.PAPER_TEXT_HEIGHT,
           languages: Sequence[str] = ("zh-Hans", "en-US"),
           px_per_mm: Optional[float] = None,
           out_dxf: Optional[str] = None,
@@ -446,10 +453,13 @@ def trace(path: str, max_side: int = 2048, solid_px: float = 16.0,
                        (height, width), overlay)
         stats["overlay"] = overlay
     if out_dxf:
+        fixed_height = (paper_text_height * scale) if effective_ppm else None
         wrote = write_dxf(out_dxf, thin_paths, solid_paths, texts,
-                          (height, width), effective_ppm)
+                          (height, width), effective_ppm, fixed_height)
         stats.update({key: wrote[key] for key in ("entities", "sketch", "solid", "texts")})
         stats["dxf"] = out_dxf
+        stats["annotation"] = annotation_defaults.summary()
+        stats["text_height_mm"] = fixed_height
     stats["ms"] = _ms(started)
     stats["notes"] = [
         ("所有墨迹走骨架，一条笔画输出一条多段线；曲线以折线近似"
@@ -475,6 +485,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--keep-text-strokes", action="store_true",
                         help="OCR 后仍保留原文字笔画")
     parser.add_argument("--ocr-langs", default="zh-Hans,en-US")
+    parser.add_argument("--scale", type=float, default=annotation_defaults.SCALE,
+                        help="出图比例分母（默认 100，即 1:100）")
+    parser.add_argument("--paper-height", type=float,
+                        default=annotation_defaults.PAPER_TEXT_HEIGHT,
+                        help="纸面文字高度 mm（默认 3.5）")
     parser.add_argument("--check-ocr", action="store_true",
                         help="只检查 OCR 后端是否可用（不转换）")
     parser.add_argument("--pretty", action="store_true")
@@ -490,6 +505,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                       simplify=args.simplify, ocr=args.ocr_text,
                       keep_text_strokes=args.keep_text_strokes,
                       solid_contours=args.solid_contours,
+                      scale=args.scale, paper_text_height=args.paper_height,
                       languages=tuple(args.ocr_langs.split(",")),
                       px_per_mm=args.px_per_mm, out_dxf=args.out_dxf,
                       overlay=args.preview)

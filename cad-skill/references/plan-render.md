@@ -6,6 +6,9 @@
 现在统一走 `wall_plan.build_plan()`：墙、门、窗、轴网、尺寸、楼梯都先变成**同一份调用序列**，
 再由 `scripts/plan_render.py` 翻译成四个后端。预览看到的和落进 CAD 的因此是同一套图元。
 
+DXF 的文字/标注样式用安全默认：`TZ_HZ`（`txt.shx + gbcbig.shx`）、1:100、3.5mm 纸面字高、
+建筑斜线箭头；见 `references/annotation-defaults.md`。
+
 ```text
 plan.json ──► wall_plan.build_plan() ──► calls
                                       ├──► plan.scr（一次 COM 调用）

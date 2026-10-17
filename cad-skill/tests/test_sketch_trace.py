@@ -114,6 +114,30 @@ class HybridTracerTests(unittest.TestCase):
         self.assertIn("chi_sim", joined)
         self.assertIn("setup-windows.md#ocr", hint["doc"])
 
+    def test_calibrated_text_uses_paper_height(self) -> None:
+        original = sketch_trace.ocr_texts
+        sketch_trace.ocr_texts = lambda *args, **kwargs: (
+            [{"text": "A", "confidence": 0.95, "x": 0.1, "y": 0.6,
+              "w": 0.2, "h": 0.1},
+             {"text": "B", "confidence": 0.95, "x": 0.1, "y": 0.2,
+              "w": 0.2, "h": 0.1}], "fake")
+        try:
+            dxf_path = os.path.join(self.tmp, "paper.dxf")
+            stats = sketch_trace.trace(self.image, ocr=True, px_per_mm=0.1,
+                                       out_dxf=dxf_path)
+        finally:
+            sketch_trace.ocr_texts = original
+        self.assertAlmostEqual(stats["text_height_mm"], 350.0)
+        if ezdxf is not None:
+            doc = ezdxf.readfile(dxf_path)
+            texts = [e for e in doc.modelspace() if e.dxftype() == "TEXT"]
+            self.assertEqual([e.dxf.height for e in texts], [350.0, 350.0])
+            # 两段文字都要落在画布内，且不因字高变量覆盖而整体偏移
+            positions = sorted(round(e.dxf.insert.y, 1) for e in texts)
+            self.assertEqual(len(set(positions)), 2)
+            self.assertTrue(all(0 < value < 3000 for value in positions), positions)
+            self.assertEqual(doc.styles.get("TZ_HZ").dxf.bigfont, "gbcbig.shx")
+
     def test_ocr_requested_without_backend_raises_hint(self) -> None:
         original = sketch_trace.ocr_texts
         sketch_trace.ocr_texts = lambda *args, **kwargs: ([], None)

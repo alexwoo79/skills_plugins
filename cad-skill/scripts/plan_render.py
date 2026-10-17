@@ -35,9 +35,10 @@ if SCRIPT_DIR not in sys.path:
 
 import plan_to_scr  # noqa: E402
 import wall_plan  # noqa: E402
+import annotation_defaults  # noqa: E402
 
 LAYERS = dict(wall_plan.DEFAULT_LAYERS)
-DIMSTYLE = "CADSKILL"
+DIMSTYLE = annotation_defaults.DIM_STYLE
 
 LAYER_STYLE = {
     "A-WALL": ("#111111", 1.6, ""),
@@ -108,11 +109,8 @@ def _new_doc():
                        {"A-TEXT", "A-FURN", "A-ROOM", "A-TRACE", "0"}):
         if name not in doc.layers:
             doc.layers.new(name)
-    if DIMSTYLE not in doc.dimstyles:
-        doc.dimstyles.new(DIMSTYLE, dxfattribs={
-            "dimtxt": 250.0, "dimasz": 150.0, "dimexe": 100.0, "dimexo": 100.0,
-            "dimgap": 50.0, "dimdec": 0,
-        })
+    annotation_defaults.ensure_text_styles(doc)
+    annotation_defaults.ensure_dim_style(doc, name=DIMSTYLE)
     return doc
 
 
@@ -160,6 +158,7 @@ def _dxf_call(model, call: Dict[str, Any]) -> bool:
             raise wall_plan.SpecError("draw_text.text 不能为空")
         entity = model.add_text(text, height=float(a.get("height", 2.5)),
                                 dxfattribs={**attribs,
+                                            "style": annotation_defaults.TEXT_STYLE,
                                             "rotation": float(a.get("rotation", 0))})
         entity.set_placement(_point(a.get("position")))
         return True

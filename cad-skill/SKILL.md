@@ -51,7 +51,8 @@ Codex 在 macOS / Linux 上时**不能**直接画图：可以用 `plan_render.py
 | 想在 Mac 上先审方案、不打开 CAD | `scripts/plan_render.py --out-svg preview.svg` |
 | 图元多、嫌慢，想选批量脚本还是 DXF | `references/performance.md` |
 | 想要一份照抄就能跑通的两居室示例 | `assets/example-two-bedroom/`（`plan.json` + `runbook.md`） |
-| 手上是图片/扫描件，想描成墙线或 DXF | `references/image-vectorize.md` + `scripts/image_to_calls.py` |
+| 手上是图片/扫描件，想转 DXF | `references/image-to-dxf.md`（用法）+ `references/image-vectorize.md`（算法） |
+| 字体、标注样式、字高与比例 | `references/annotation-defaults.md` |
 | 想知道这轮优化做了什么、哪些暂缓 | `references/roadmap.md` |
 
 ## 命令速查
@@ -112,50 +113,44 @@ python3 scripts/wall_plan.py plan.json --pretty
 第一次上手可以照抄 `assets/example-two-bedroom/runbook.md`（8 段墙 / 10 个洞口 / 63 个图元）。
 洞口越界、重叠、贴墙角都会给 `warnings`——先改方案再落图。
 
-## 从图片描图
+## 图片 → DXF
 
 **默认原则：先保真，再结构化。** 用户只说“转成 DXF”时，忠实描出图里的线，
-不删家具/文字/尺寸/图签，不裁剪室外内容，不清理碎线，也不把原始线替换成推断出来的墙体形状。
-只有用户明确说“只要墙体”“清掉碎线”“提取门窗”时，才开启结构化或清理选项。
+不推断墙体、不删家具/文字/尺寸/图签。
 
-先分清图是什么，三个脚本的分工不能混：
+```bash
+# 忠实描线（默认；不需要 CAD）
+python3 scripts/image_to_calls.py plan.png --out-dxf plan.dxf
+
+# 有真实比例（推荐）：--px-per-mm 或 --calibrate ... --real ...
+python3 scripts/image_to_calls.py plan.png --px-per-mm 0.16686 --out-dxf plan.dxf
+
+# 需要可编辑文字（macOS Vision；Windows 见 setup-windows.md#ocr）
+python3 scripts/image_to_calls.py plan.png --px-per-mm 0.16686 \
+    --ocr-text --out-dxf plan.dxf
+
+# 结构化墙体/洞口/调用序列
+python3 scripts/image_to_calls.py plan.png --mode walls --px-per-mm 0.16686 \
+    --out-plan plan.json --out-calls calls.json
+```
+
+- 图层：默认 `A-SKETCH`（一条笔画一条 PLINE），OCR 文字 `A-TEXT`；
+  `--solid-contours` 才产生 `A-SOLID`；结构化模式为 `A-WALL/A-DOOR/A-WINDOW/A-TRACE`。
+- 单位：没标定输出像素（`$INSUNITS=0`）；给了 `--px-per-mm` / `--calibrate` 才是毫米。
+- 注释：默认 `TZ_HZ`（`txt.shx + gbcbig.shx`）、1:100、3.5mm→350mm、建筑斜线；
+  见 `references/annotation-defaults.md`。
+- 完整参数、尺寸链标定、OCR、质量与排障：`references/image-to-dxf.md`。
+
+其他图种：
 
 | 图 | 脚本 | 输出 |
 | --- | --- | --- |
-| 双线线稿（CAD 导出） | `scripts/image_to_calls.py` | 默认 `--mode lines` + `--tracer hybrid`：细线进 `A-SKETCH`、实心区域轮廓进 `A-SOLID`；`--mode walls` 才输出墙中心线/洞口/调用序列 |
-| 实心厚墙平面图（家装/售楼图） | `scripts/image_to_walls.py` | `A-WALL` 墙体 + 全部线work 进 `A-TRACE`（默认不裁剪、不清理） |
-| logo / 图标 / 实心图形 | `scripts/image_to_vector.py` | SVG（even-odd 填充）或带填充的 DXF |
+| 实心厚墙平面图（售楼/家装） | `scripts/image_to_walls.py` | `A-WALL` 墙体 + 全部线work（默认不裁剪、不清理） |
+| logo / 图标 / 实心图形 | `scripts/image_to_vector.py` | SVG 或带填充的 DXF |
 
-三条铁律：
-
-1. **尽量标定**：`--px-per-mm` 或 `--calibrate "x1,y1 x2,y2" --real 12000`，再给 `--origin`。图上有尺寸链时优先按尺寸链定标（求和 → 量相邻墙中心线 → 逐段复核），别用整体外接框。没有标定也能出 DXF，但单位是像素，不要冒充毫米。
-2. **先看预览再落图**：`--preview check.png` 是给人确认的。门窗类型仍按宽度与门扇线猜；门的合页侧/开向用开启弧投票，证据不足会标 `needs_review`（预览里橙圈）。
-3. **如实说明精度**：干净线稿接近逐段还原（墙 8/8、洞口 10/10、轴位置误差 0mm），扫描件会掉一档（墙 7/8、洞口 8/10）。
-
-需要楼梯时加 `--stairs`：按等间距、等长、互相平行的短线簇识别直跑楼梯，并从墙配对里摘出去。
-只认正交直跑梯段；旋转梯、弧形梯、带平台断开的长梯仍要人工补。
-
-忠实模式（默认）用混合描线器：**所有墨迹细化成 1px 骨架，一条笔画输出一条多段线**；
-不会把墙身边框轮廓化成双线，曲线/圆弧以多段线近似。需要保留实心块外轮廓时，
-显式加 `--solid-contours`。它不推断门窗，也不删除图里的元素。
-
-```bash
-# 忠实描线（默认）
-python3 scripts/image_to_calls.py plan.png --out-dxf plan.dxf
-
-# 需要可编辑文字时（macOS 用 Vision；Windows 需先装 Tesseract，见 setup-windows.md#ocr）
-python3 scripts/image_to_calls.py plan.png --ocr-text --out-dxf plan.dxf
-
-# 旧 Hough 线段模式（只输出 A-TRACE）
-python3 scripts/image_to_calls.py plan.png --tracer hough --out-dxf plan.dxf
-```
-
-相关参数：`--max-side 2048`（工作画布长边）、`--simplify 1.2`（多段线简化）、
-`--solid-contours` + `--solid-px 16`（显式保留实心轮廓时用）、
-`--keep-text-strokes`（OCR 后仍保留原笔画）。
-结构化模式（`--mode walls`）下，`--out-dxf` 与 `--out-calls` 走同一个后端，图元一一对应。
-`image_to_walls.py` 默认保留全部线work；要裁剪/清理时显式加 `--inside-only --clean-trace`。
-依赖 `opencv-python-headless` 与 `ezdxf`；细节见 `references/image-vectorize.md`。
+结构化模式的铁律：尽量按尺寸链标定；先看 `--preview` 再落图；门窗/开向证据不足会标
+`needs_review`；楼梯用 `--stairs`（只认正交直跑）。依赖 `opencv-python-headless` 与
+`ezdxf`；算法细节与实测见 `references/image-vectorize.md`。
 
 ## 落图：先校验，再批量
 

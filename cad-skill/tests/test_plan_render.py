@@ -83,7 +83,17 @@ class BackendParityTests(unittest.TestCase):
         layers = {entity.dxf.layer for entity in entities}
         self.assertTrue({"A-WALL", "A-DOOR", "A-WINDOW", "A-GRID", "A-DIM",
                          "A-STAR"}.issubset(layers))
-        self.assertEqual(doc.dimstyles.get("CADSKILL").dxf.dimtxt, 250.0)
+        dimstyle = doc.dimstyles.get("CADSKILL")
+        self.assertEqual(dimstyle.dxf.dimtxt, 350.0)      # 3.5mm × 1:100
+        self.assertEqual(dimstyle.dxf.dimtsz, 150.0)      # 建筑斜线
+        self.assertEqual(dimstyle.dxf.dimtxsty, "TZ_EN")
+        style = doc.styles.get("TZ_HZ")
+        self.assertEqual(style.dxf.font, "txt.shx")
+        self.assertEqual(style.dxf.bigfont, "gbcbig.shx")
+        self.assertAlmostEqual(style.dxf.width, 0.7)
+        texts = [entity for entity in entities if entity.dxftype() == "TEXT"]
+        self.assertTrue(texts)
+        self.assertTrue(all(entity.dxf.style == "TZ_HZ" for entity in texts))
 
     @unittest.skipIf(ezdxf is None, "需要 ezdxf")
     def test_blocks_replace_door_and_window_primitives(self) -> None:
