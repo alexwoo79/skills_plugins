@@ -151,7 +151,7 @@ class CadDirectCliTests(unittest.TestCase):
             self.assertEqual(code, 0, payload)
             self.assertTrue(payload["dry_run"])
 
-            code, payload = run_cli(["stats"])
+            code, payload = run_cli(["--cad-type", "AUTOCAD", "stats"])
             self.assertEqual(code, 1)
             self.assertIn("pywin32", payload["error"])
         finally:

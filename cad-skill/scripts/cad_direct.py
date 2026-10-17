@@ -2,11 +2,11 @@
 """cad_direct — 直接用程序调用 CAD 的命令行入口。
 
 Windows 驱动层是内联在 skill 里的 `vendor/cad_core.py`（COM：图层/模型空间缓存、
-run_script 批量脚本与 USERS1 哨兵确认、忙碌重试、撤销组）。macOS 驱动层是
+run_script 批量脚本与 USERS1 哨兵确认、忙碌重试、撤销组）。macOS / Linux 驱动层是
 `scripts/cadcraft_direct.py`，通过 CADCraft 的 127.0.0.1 JSON 控制端口工作。
 
 COM 只能同机调用；远程时用 `ssh winbox python C:\\path\\cad_direct.py ...`。
-macOS 上需要先以 `--control <port>` 启动 CADCraft。
+macOS / Linux 上需要先以 `--control <port>` 启动 CADCraft；skill 也会尝试自动启动。
 
 约定：所有子命令都往 stdout 打**一个 JSON 对象**，日志走 stderr，退出码
 0=成功 / 1=CAD 侧失败 / 2=参数或规格错误。脚本里的坐标单位由图纸决定（建筑图用 mm）。
@@ -18,7 +18,7 @@ macOS 上需要先以 `--control <port>` 启动 CADCraft。
   cad_direct.py script --file plan.scr            # 整批落图（推荐）
   cad_direct.py shot --out check.png              # 截图交给 Codex 看
   cad_direct.py save --path D:\\out\\plan.dwg
-  cad_direct.py --cad-type CADCRAFT draw --calls calls.json   # macOS
+  cad_direct.py --cad-type CADCRAFT draw --calls calls.json   # macOS / Linux
 """
 
 from __future__ import annotations
@@ -92,17 +92,13 @@ def _has_cad() -> bool:
 
 
 def _default_cad_type() -> str:
-    """Windows 默认 COM；macOS 装了 CADCraft 时默认走它的控制端口。"""
+    """Windows 默认 COM；macOS / Linux 检测到 CADCraft 时默认走控制端口。"""
     explicit = os.environ.get("CAD_TYPE")
     if explicit:
         return explicit.upper()
-    try:
-        import win32com.client  # noqa: F401
-        import pythoncom  # noqa: F401
+    if _has_cad():
         return "AUTOCAD"
-    except ImportError:
-        pass
-    if sys.platform == "darwin" and os.path.exists("/Applications/CADCraft.app"):
+    if CADCraftController is not None and CADCraftController.find_binary():
         return "CADCRAFT"
     return "AUTOCAD"
 
@@ -140,10 +136,10 @@ def connect(controller: CADController | None = None) -> CADController:
         if cadcraft.is_running():
             return cadcraft
         if not cadcraft.start_cad():
+            hint = CADCraftController.launch_hint(port)
             raise RuntimeError(
-                "无法连接 CADCraft：请先运行 "
-                "`/Applications/CADCraft.app/Contents/MacOS/CADCraft --control %d`，"
-                "或用 `--cadcraft-port` 指定控制端口" % port)
+                "无法连接 CADCraft：请先运行 %s，"
+                "或用 `--cadcraft-port` 指定控制端口" % hint)
         return cadcraft
 
     if _load_core() is None:
@@ -453,11 +449,11 @@ def _edit(operation, args, new_entity: bool = False, multiple: bool = False) -> 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="cad_direct.py",
-                                     description="直接用程序调用 CAD（Windows COM / macOS CADCraft）")
+                                     description="直接用程序调用 CAD（Windows COM / macOS + Linux CADCraft）")
     parser.add_argument("--cad-type",
                         choices=["AUTOCAD", "GCAD", "GSTARCAD", "ZWCAD", "CADCRAFT"],
                         default=_default_cad_type(),
-                        help="CAD 类型（默认读 CAD_TYPE；macOS 装了 CADCraft 时默认 CADCRAFT）")
+                        help="CAD 类型（默认读 CAD_TYPE；无 COM 且检测到 CADCraft 时默认 CADCRAFT）")
     parser.add_argument("--output-dir", help="脚本落盘目录（默认读 CAD_OUTPUT_DIR，再退回 ./cad_output）")
     parser.add_argument("--cadcraft-port", type=int,
                         default=int(os.environ.get("CADCRAFT_CONTROL_PORT", "43210")),

@@ -14,6 +14,7 @@ import json
 import os
 import sys
 import unittest
+from unittest import mock
 
 import cv2
 import numpy as np
@@ -216,7 +217,7 @@ class CADCraftDriverTests(unittest.TestCase):
                 "stats",
             ])
         payload = json.loads(buffer.getvalue())
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 0, payload)
         self.assertEqual(payload["entity_count"], 2)
 
     def test_cadcraft_does_not_load_windows_core(self) -> None:
@@ -236,6 +237,52 @@ class CADCraftDriverTests(unittest.TestCase):
             cad_direct._load_core = original
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(buffer.getvalue())["entity_count"], 2)
+
+    def test_binary_discovery_uses_path(self) -> None:
+        with mock.patch.dict(os.environ, {"CADCRAFT_BINARY": ""}), \
+                mock.patch.object(
+                    cadcraft_direct.shutil, "which",
+                    side_effect=lambda name: "/usr/bin/cadcraft"
+                    if name == "cadcraft" else None), \
+                mock.patch.object(
+                    cadcraft_direct.os.path, "exists",
+                    side_effect=lambda path: path == "/usr/bin/cadcraft"):
+            self.assertEqual(cadcraft_direct.find_binary(), "/usr/bin/cadcraft")
+
+    def test_binary_discovery_uses_macos_app_bundle(self) -> None:
+        with mock.patch.dict(os.environ, {"CADCRAFT_BINARY": ""}), \
+                mock.patch.object(cadcraft_direct.shutil, "which", return_value=None), \
+                mock.patch.object(
+                    cadcraft_direct.os.path, "exists",
+                    side_effect=lambda path: path == cadcraft_direct.MACOS_APP):
+            self.assertEqual(
+                cadcraft_direct.find_binary(), cadcraft_direct.MACOS_APP)
+
+    def test_start_cad_uses_discovered_binary(self) -> None:
+        controller = cadcraft_direct.CADCraftController(
+            port=43210, launch=True, startup_timeout=1)
+        with mock.patch.object(controller, "is_running", side_effect=[False, True]), \
+                mock.patch.object(
+                    cadcraft_direct, "find_binary",
+                    return_value="/usr/bin/cadcraft"), \
+                mock.patch.object(cadcraft_direct.subprocess, "Popen") as popen:
+            self.assertTrue(controller.start_cad())
+        self.assertEqual(
+            popen.call_args.args[0],
+            ["/usr/bin/cadcraft", "--control", "43210"])
+
+    def test_cli_defaults_to_cadcraft_when_com_is_missing(self) -> None:
+        buffer = io.StringIO()
+        with mock.patch.dict(os.environ, {"CAD_TYPE": ""}), \
+                mock.patch.object(cad_direct, "_has_cad", return_value=False), \
+                mock.patch.object(
+                    cad_direct.CADCraftController, "find_binary",
+                    return_value="/usr/bin/cadcraft"):
+            with contextlib.redirect_stdout(buffer):
+                code = cad_direct.main(["--cadcraft-port", "43210", "stats"])
+        payload = json.loads(buffer.getvalue())
+        self.assertEqual(code, 0, payload)
+        self.assertEqual(payload["entity_count"], 2)
 
 
 if __name__ == "__main__":
