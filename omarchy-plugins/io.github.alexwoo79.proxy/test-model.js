@@ -229,6 +229,7 @@ eq(parsedOn.browser.endpoint, "10.10.10.111:7890", "browser endpoint")
 eq(parsedOn.tun.service, "stopped", "TUN stopped is parsed")
 eq(parsedOn.tun.iface, "", "no TUN interface while stopped")
 eq(parsedOn.tun.config, "", "no TUN config while stopped")
+eq(parsedOn.tun.upstream, "", "no upstream while the TUN config is gone")
 
 const statusDirect = [
   "HTTP   代理: 未启用",
@@ -239,7 +240,9 @@ const statusDirect = [
   "TUN/mihomo:",
   "  mihomo-tun.service: 运行中",
   "  虚拟网卡 Meta: Meta",
-  "  mihomo 配置: /home/alex/.config/mihomo/config.yaml"
+  "  mihomo 配置: /home/alex/.config/mihomo/config.yaml",
+  "  上游: 10.10.10.105:7890",
+  "  直连保护（DIRECT）:"
 ].join("\n")
 
 const parsedDirect = M.parseStatus(statusDirect)
@@ -250,6 +253,20 @@ eq(parsedDirect.browser.on, false, "no browser flags means not proxied")
 eq(parsedDirect.tun.service, "running", "running TUN is parsed")
 eq(parsedDirect.tun.iface, "Meta", "TUN interface is reported")
 has(parsedDirect.tun.config, "config.yaml", "TUN config path is reported")
+eq(parsedDirect.tun.upstream, "10.10.10.105:7890", "TUN upstream is parsed")
+
+// The upstream line is printed whether or not mihomo runs, so only the service
+// state decides whether it is the address in play. A line that is not an
+// address is dropped rather than shown.
+const parsedTunOff = M.parseStatus([
+  "TUN/mihomo:",
+  "  mihomo-tun.service: 已停止",
+  "  虚拟网卡 Meta: 未创建",
+  "  mihomo 配置: /home/alex/.config/mihomo/config.yaml",
+  "  上游: 不存在"
+].join("\n"))
+eq(parsedTunOff.tun.service, "stopped", "a stopped service is still parsed")
+eq(parsedTunOff.tun.upstream, "", "a non-address upstream is dropped")
 
 eq(M.parseStatus("").desktop.on, false, "empty status does not throw")
 eq(M.parseStatus(null).tun.service, "unknown", "null status stays unknown")
@@ -313,6 +330,13 @@ const tunTip = M.tooltipText({ on: false, configured: "10.10.10.111:7890", tun: 
 has(tunTip, "TUN on 10.10.10.111:7890", "tooltip leads with TUN when the per-app proxy is off")
 ok(!tunTip.includes("Proxy off"), "tooltip does not claim the machine is direct while TUN runs")
 
+// Nothing remembered and no per-app proxy: the address in play is whatever
+// mihomo is pointed at, and that is what the tooltip and the copied block name.
+const upstreamTip = M.tooltipText({ on: false, tun: "running", upstream: "10.10.10.105:7890", health: null, probeEnabled: true })
+has(upstreamTip, "TUN on 10.10.10.105:7890", "tooltip names the TUN upstream when nothing is remembered")
+const upstreamSummary = M.statusSummary({ on: false, tun: "running", upstream: "10.10.10.105:7890" })
+has(upstreamSummary, "Endpoint: 10.10.10.105:7890", "copied block names the TUN upstream")
+
 // --- clearing every endpoint ------------------------------------------------
 // Clear is proxyctl's layer wipe plus a TUN stop: `off` covers the desktop
 // proxy, the session env file, the browser flags, git and the dev tools, and
@@ -329,6 +353,10 @@ has(M.endpointHint({ draft: "", remembered: "", proxyOn: false }),
   "No endpoint yet", "empty field with nothing remembered")
 has(M.endpointHint({ draft: "", remembered: "10.0.0.5:7890", proxyOn: false }),
   "Remembered 10.0.0.5:7890", "empty field with a remembered address")
+has(M.endpointHint({ draft: "", remembered: "10.0.0.5:7890", upstream: "10.10.10.105:7890", proxyOn: false }),
+  "Remembered 10.0.0.5:7890", "a remembered address outranks the TUN upstream")
+has(M.endpointHint({ draft: "", remembered: "", upstream: "10.10.10.105:7890", proxyOn: false }),
+  "TUN is running through 10.10.10.105:7890", "empty field while TUN carries the traffic")
 has(M.endpointHint({ draft: "", endpoint: "10.0.0.5:7890", proxyOn: true }),
   "Running through 10.0.0.5:7890", "empty field while a proxy runs")
 has(M.endpointHint({ draft: "garbage", remembered: "10.0.0.5:7890" }),

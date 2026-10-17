@@ -222,7 +222,7 @@ function parseStatus(text) {
     git: { on: false, endpoint: "" },
     sessionEnv: false,
     browser: { on: false, endpoint: "" },
-    tun: { service: "unknown", iface: "", config: "" }
+    tun: { service: "unknown", iface: "", config: "", upstream: "" }
   }
 
   var match = output.match(/HTTP\s+代理已启用:\s*(\S+)/)
@@ -262,6 +262,11 @@ function parseStatus(text) {
   if (match && match[1] !== "未创建") state.tun.iface = match[1]
   match = tunText.match(/mihomo 配置:\s*(\S+)/)
   if (match && match[1] !== "不存在") state.tun.config = match[1]
+  // "上游: host:port" is printed whether or not the service is up, so this is
+  // the address mihomo is (or was last) pointed at. Only the service state
+  // decides whether that address is the one in play right now.
+  match = tunText.match(/上游:\s*(\S+)/)
+  if (match && isAddress(match[1])) state.tun.upstream = match[1]
 
   return state
 }
@@ -404,11 +409,13 @@ function endpointHint(state) {
   var draft = String(state && state.draft != null ? state.draft : "").trim()
   var live = String(state && state.endpoint != null ? state.endpoint : "").trim()
   var remembered = String(state && state.remembered != null ? state.remembered : "").trim()
+  var upstream = String(state && state.upstream != null ? state.upstream : "").trim()
   var proxyOn = !!(state && state.proxyOn)
   var failed = !!(state && state.failed)
   if (draft === "") {
     if (proxyOn && live !== "") return "Running through " + live + " \u2014 type host:port to re-point it"
     if (remembered !== "") return "Remembered " + remembered + " \u2014 type host:port to replace it, or flip the switch"
+    if (upstream !== "") return "TUN is running through " + upstream + " \u2014 type host:port to enable the per-app proxy too"
     return "No endpoint yet \u2014 type host:port, then press Enter or flip the switch"
   }
   if (!isAddress(draft)) return "Enter an address as host:port \u2014 the switch enables it"
@@ -423,7 +430,7 @@ function statusSummary(state) {
   var on = !!(state && state.on)
   var tun = !!(state && state.tun === "running")
   var lines = ["Proxy (proxyctl): " + (on ? "on" : (tun ? "off (TUN on)" : "off"))]
-  lines.push("Endpoint: " + String((state && (state.endpoint || state.configured)) || "\u2014"))
+  lines.push("Endpoint: " + String((state && (state.endpoint || state.configured || state.upstream)) || "\u2014"))
   if (on || tun) {
     lines.push("Health: " + healthLine(on, !!(state && state.busy), state ? state.health : null,
       !state || state.probeEnabled !== false, tun))
@@ -438,7 +445,10 @@ function statusSummary(state) {
 function tooltipText(state) {
   var on = !!(state && state.on)
   var tunRunning = !!(state && state.tun === "running")
-  var endpoint = String((state && (state.endpoint || state.configured)) || "")
+  // The address the tooltip names has to be one this machine is actually
+  // using: the running per-app endpoint, then what the widget remembers, then
+  // whatever TUN is carrying — never a built-in default.
+  var endpoint = String((state && (state.endpoint || state.configured || state.upstream)) || "")
   var parts = [on ? "Proxy on " + endpoint : (tunRunning ? "TUN on " + endpoint : "Proxy off")]
   if (state && state.error) parts.push(state.error)
   if (on && tunRunning) parts.push("TUN on")

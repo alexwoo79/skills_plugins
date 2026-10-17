@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "Model.js" as Model
 
@@ -64,10 +65,12 @@ BarWidget {
   }
   // The address this widget remembers. Only a value that can actually be
   // handed to proxyctl counts: an empty stored value is the state Clear leaves
-  // behind, and it must mean "nothing remembered" rather than quietly falling
-  // back to whatever endpoint the last network needed.
+  // behind, and it means "nothing remembered" rather than quietly falling back
+  // to the built-in default — that address belongs to whichever network the
+  // plugin was written on, and printing it in the panel claims an endpoint this
+  // machine does not have.
   readonly property string configuredAddress: {
-    var raw = root.setting("address", Model.DEFAULT_ADDRESS)
+    var raw = root.setting("address", "")
     var text = String(raw == null ? "" : raw).trim()
     return Model.isAddress(text) ? text : ""
   }
@@ -109,6 +112,18 @@ BarWidget {
   readonly property bool popoutSwitchClosing: false
 
   readonly property string liveAddress: root.endpoint !== "" ? root.endpoint : root.configuredAddress
+  // The upstream mihomo carries traffic to while TUN runs. `proxyctl status`
+  // prints it and the panel already reads that report; the line survives
+  // `tun off`, so the service state is what makes it "the address in play"
+  // rather than a leftover from the last network.
+  readonly property string tunUpstream: root.tunRunning && root.status && root.status.tun
+    && Model.isAddress(root.status.tun.upstream) ? String(root.status.tun.upstream) : ""
+  // The address the panel shows: the running per-app endpoint first, then what
+  // this widget remembers, then whatever TUN is carrying — never a built-in
+  // default. A fresh widget shows nothing rather than an address it made up.
+  readonly property string currentAddress: root.endpoint !== ""
+    ? root.endpoint
+    : (root.configuredAddress !== "" ? root.configuredAddress : root.tunUpstream)
   // What the endpoint field holds. The field is the source of truth while the
   // panel is open, so the switch always acts on what the user can see.
   readonly property string draftAddress: endpointField.text.trim()
@@ -120,12 +135,13 @@ BarWidget {
     draft: root.draftAddress,
     endpoint: root.endpoint,
     remembered: root.configuredAddress,
+    upstream: root.tunUpstream,
     proxyOn: root.proxyOn,
     failed: Model.healthFailed(root.health)
   })
-  readonly property color foreground: bar ? bar.barForeground : Color.foreground
+  readonly property color foreground: bar ? bar.barForeground : Commons.Color.foreground
   readonly property color dimColor: Qt.darker(root.foreground, 1.5)
-  readonly property color urgentColor: bar ? bar.urgent : Color.urgent
+  readonly property color urgentColor: bar ? bar.urgent : Commons.Color.urgent
   readonly property color successColor: "#a3be8c"
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property string label: Model.barLabel(root.proxyOn, root.busy, root.health, root.tunRunning)
@@ -137,6 +153,7 @@ BarWidget {
     busy: root.busy,
     endpoint: root.liveAddress,
     configured: root.configuredAddress,
+    upstream: root.tunUpstream,
     health: root.health,
     probeEnabled: root.probeEnabled,
     tun: root.status ? root.status.tun.service : "",
@@ -169,10 +186,29 @@ BarWidget {
   implicitWidth: content.implicitWidth + Style.space(16)
   implicitHeight: root.barSize
 
-  // Seed the field so scripted toggles (IPC) work before the panel was ever
-  // opened; open() only fills a field that is still empty, so a cleared or
-  // half-typed endpoint is never replaced behind the user's back.
-  Component.onCompleted: endpointField.text = root.liveAddress
+  // True once the field holds something the user typed rather than something
+  // the panel put there: a draft that has not been applied is never replaced.
+  property bool endpointDraftTouched: false
+
+  // Keep the field showing the address in play (see currentAddress) until the
+  // user edits it. This cannot happen once at creation: settings arrive after
+  // Component.onCompleted (the bar injects them when the slot is built) and the
+  // status carrying the TUN upstream arrives a moment after that. Seeding once
+  // from an empty settings object is what used to leave the field holding the
+  // built-in default for the rest of the session.
+  function seedEndpointField() {
+    if (!endpointField || root.endpointDraftTouched) return
+    if (endpointField.text.trim() === root.currentAddress) return
+    endpointField.text = root.currentAddress
+  }
+
+  // Seeding after a programmatic change must not look like a user edit, so
+  // applyAddress() and clearEndpoints() clear the flag themselves.
+  Component.onCompleted: root.seedEndpointField()
+
+  onCurrentAddressChanged: root.seedEndpointField()
+  onSettingsChanged: root.seedEndpointField()
+  onStatusChanged: root.seedEndpointField()
 
   // One read of the managed env file. A missing file is not an error: it is
   // exactly what "direct" looks like after `proxyctl off`.
@@ -240,6 +276,7 @@ BarWidget {
     root.lastError = ""
     root.persistAddress(address)
     endpointField.text = address
+    root.endpointDraftTouched = false
     if (root.proxyOn) {
       root.busy = true
       toggleProc.command = [root.proxyctlPath, "on", "--address", address]
@@ -259,6 +296,7 @@ BarWidget {
     root.lastError = ""
     root.notice = ""
     endpointField.text = ""
+    root.endpointDraftTouched = false
     root.persistAddress("")
     root.health = null
     root.exitIp = ""
@@ -295,7 +333,7 @@ BarWidget {
   function toggle() {
     if (root.busy || root.clearing) return
     // Enabling uses the address in the field — the one the user just read.
-    if (!root.proxyOn && root.draftAddress === "") endpointField.text = root.configuredAddress
+    if (!root.proxyOn && root.draftAddress === "") endpointField.text = root.currentAddress
     if (!root.proxyOn && !root.draftValid) {
       root.lastError = root.noAddressError()
       return
@@ -385,6 +423,7 @@ BarWidget {
       on: root.proxyOn,
       endpoint: root.liveAddress,
       configured: root.configuredAddress,
+      upstream: root.tunUpstream,
       busy: root.busy,
       health: root.health,
       exitIp: root.exitIp,
@@ -401,10 +440,9 @@ BarWidget {
     root.copied = false
     root.copyError = ""
     root.notice = ""
-    // Seed only an empty field. A draft the user is part-way through typing —
-    // or one Clear just emptied — has to survive a reopen instead of being
-    // replaced by the remembered address again.
-    if (endpointField.text.trim() === "") endpointField.text = root.liveAddress
+    // Follow the address in play, but never replace a draft the user is
+    // part-way through typing — that one has to survive a reopen.
+    root.seedEndpointField()
     // KeyboardPanel gives the panel the keyboard and focuses the field; the
     // selection makes "the network changed, type the new endpoint" a single
     // action instead of select-all-then-type.
@@ -778,6 +816,9 @@ BarWidget {
           // Enter applies; losing focus does not, so clicking around the panel
           // can never re-point a running proxy by accident.
           onAccepted: root.applyAddress(text)
+          // textEdited fires only for typing, never for the panel's own
+          // reseeding, so this is exactly "the user is editing the address".
+          onTextEdited: root.endpointDraftTouched = true
           Keys.onEscapePressed: root.close()
         }
 
