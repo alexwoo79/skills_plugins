@@ -38,28 +38,29 @@ contact the author first: [@alexwoo79](https://github.com/alexwoo79).**
 
 ### `cad-skill/` — natural-language CAD drafting (not installed yet)
 
-Skill for driving a real CAD session through [CAD-MCP](https://github.com/daobataotie/CAD-MCP):
+Skill for driving a real CAD session **directly over Windows COM** (pywin32):
 architectural plan drafting (grid, walls, doors/windows, furniture, text, dimensions, layers)
 with a design-first, step-by-step workflow. `scripts/wall_plan.py` turns a straight-wall +
-opening spec into the MCP tool-call sequence, and `scripts/plan_to_scr.py` compiles any
+opening spec into a drawing call sequence; `scripts/plan_render.py` emits calls, an AutoCAD
+`.scr`, DXF and an SVG preview from that same geometry; `scripts/plan_to_scr.py` compiles any
 call sequence into an AutoCAD `.scr` for one-shot batch drafting (an order of magnitude
 faster than per-entity calls); `references/performance.md` explains the cost model and
 when a rewrite is — or is not — worth it. Copy it into `~/.codex/skills/` like the other
-skills; unlike everything else in this repo it targets **Windows** (CAD-MCP drives
-AutoCAD / GstarCAD / ZWCAD over COM).
+skills; unlike everything else in this repo it targets **Windows** (AutoCAD / GstarCAD /
+ZWCAD over COM), with Codex and CAD in the same desktop session.
 
-It also works **without MCP**: the COM driver is inlined at `cad-skill/vendor/cad_core.py`
-and `scripts/cad_direct.py` exposes it as a CLI (`layers`, `draw --calls`, `script --file`,
-`shot`, `save`, handle-based edits …), so a single skill folder is enough when Codex runs
-on the same Windows box as CAD. `references/direct-cli.md` covers that path, including why
-cross-machine use still wants the MCP server. 13 offline tests
-(`python3 cad-skill/tests/test_cad_core.py`) drive the CLI end to end against fake COM.
+The COM driver is inlined at `cad-skill/vendor/cad_core.py`, and `scripts/cad_direct.py`
+exposes it as a CLI (`layers`, `draw --calls`, `script --file`, `shot`, `save`, handle-based
+edits …), so a single skill folder is enough. There is no server, port or client registration;
+`draw --calls … --dry-run` validates geometry without pywin32 or CAD. 78 offline tests
+(`python3 -m pytest cad-skill/tests`) drive the CLI end to end against fake COM.
 `cad-skill/assets/example-two-bedroom/` holds a ready-to-run 96 m² two-bedroom example
 (8 walls, 10 openings → 63 entities) with a runbook that goes all the way to DWG.
 `scripts/image_to_calls.py` traces a raster line drawing into that same `plan.json`
 (wall centrelines + thickness + openings) or into a DXF, with measured accuracy locked
 by tests: 8/8 walls and 10/10 openings on a clean render, 7/8 and 8/10 on a noisy,
-0.5°-rotated scan.
+0.5°-rotated scan. It also infers each door's hinge side and swing from the drawn arc, and
+detects straight-run stairs with `--stairs`.
 
 `scripts/image_to_vector.py` covers the other half of raster work — solid shapes, logos and
 stroke text — by tracing outer contours plus holes into an even-odd filled SVG or a DXF
@@ -70,21 +71,6 @@ it separates walls by thickness (thin furniture strokes and label glyphs drop ou
 them to centre lines, measures each wall's thickness from the distance transform and emits
 a DXF with walls on `A-WALL` and everything else on `A-TRACE`. On the sample plan: 63 wall
 segments in two thickness classes (18.8 / 10.2 px), 98.7% wall-pixel coverage, 0.8 s.
-
-### `cad-mcp/` — local copy of the CAD-MCP server (patched)
-
-Vendored copy of [CAD-MCP](https://github.com/daobataotie/CAD-MCP) v2.0 (MIT, `LICENSE`
-included) so the skill never has to fetch code from the network. Two local changes,
-documented in `PATCHES.md` with re-appliable diffs in `patches/`:
-
-1. layer / `ModelSpace` caching in `src/cad_controller.py` — per-entity COM round trips
-   drop from 24 to 4 with 8 layers;
-2. a `draw_script` tool that writes a whole `.scr` locally and runs it in one call
-   (with a `USERS1` sentinel to confirm completion), instead of one COM round trip per
-   entity.
-
-14 offline tests (`python3 -m unittest discover -s tests`) cover both without Windows or
-CAD. The upstream demo gif was dropped to keep the repo small.
 
 ### `omarchy-plugins/` — Omarchy shell plugins
 
@@ -158,6 +144,7 @@ marketplace at the plugin source again, or by copying it back into
 | `markdown-ppt` | the `markdown-ppt` CLI engine |
 | `omarchy-proxyctl`, proxy plugin | `proxyctl` on PATH or `~/.local/bin/proxyctl` |
 | codePad widget | the `codepad` binary — on `PATH`, or set `binary` in the widget's entry in `~/.config/omarchy/shell.json` (leave it empty to resolve `codepad` through `PATH`) |
+| `cad-skill` | Windows + `pywin32` (Pillow for screenshots); `opencv-python-headless` + `ezdxf` for raster tracing |
 
 ## Install the Omarchy plugin
 
