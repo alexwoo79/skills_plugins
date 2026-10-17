@@ -8,6 +8,7 @@
   4. 骨架按图走线（端点/交点切开），Douglas-Peucker 简化成多段线；
   5. 实心区域沿外轮廓 + 孔走闭合多段线；
   6. 可选 OCR：识别到的文字写成 TEXT，并从描线掩膜里移除原笔画。
+  7. 可选预处理：去等距背景网格；共线合并 + 轴向/端点吸附。
 
 输出图层：A-SKETCH（细线）、A-SOLID（实心轮廓）、A-TEXT（OCR 文字）。
 没有标定时坐标为工作图像素且 $INSUNITS=0；给 --px-per-mm 才写毫米。
@@ -36,6 +37,7 @@ if SCRIPT_DIR not in sys.path:
 
 from image_to_walls import thin  # noqa: E402
 import annotation_defaults  # noqa: E402
+import image_preprocess  # noqa: E402
 
 
 def _timed() -> float:
@@ -200,18 +202,28 @@ def _otsu_value(blurred, ink) -> float:
     return float(value)
 
 
-def split_strokes(ink: np.ndarray, solid_px: float) -> Tuple[np.ndarray, np.ndarray]:
-    """按连通域最厚处分流：实心区域 / 细笔画。"""
-    count, labels, stats, _ = cv2.connectedComponentsWithStats(
-        (ink > 0).astype(np.uint8), 8)
-    distance = cv2.distanceTransform((ink > 0).astype(np.uint8), cv2.DIST_L2, 5)
-    if count <= 1:
+def split_strokes(ink: np.ndarray, solid_px: float,
+                  min_area: float = 80.0) -> Tuple[np.ndarray, np.ndarray]:
+    """分流：实心填充区域（墙/柱/色块）vs 细笔画。
+
+    先用距离变换找“局部厚度 >= solid_px”的核心像素，再沿墨迹膨胀回整条墙带。
+    这样不依赖连通域的整体填充率——整张平面图连成一块也能正确分出墙和线。
+    """
+    binary = (ink > 0).astype(np.uint8)
+    distance = cv2.distanceTransform(binary, cv2.DIST_L2, 5)
+    core = (distance >= max(1.5, solid_px / 2.0)).astype(np.uint8)
+    if not core.any():
         return ink, np.zeros_like(ink)
-    maximum = np.zeros(count, dtype=np.float32)
-    np.maximum.at(maximum, labels.ravel(), distance.ravel())
-    solid_ids = np.nonzero(maximum >= max(1.0, solid_px / 2.0))[0]
-    solid_ids = solid_ids[solid_ids != 0]
-    solid = np.isin(labels, solid_ids).astype(np.uint8) * 255
+    size = max(3, int(round(solid_px)))
+    # 用矩形核：椭圆核会把墙/柱端部的直角吃掉，形成倒角
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (size, size))
+    grown = cv2.dilate(core * 255, kernel)
+    solid = ((grown > 0) & (binary > 0)).astype(np.uint8) * 255
+    # 去掉很小的实心碎点（文字/噪点）
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(solid, 8)
+    keep = stats[:, cv2.CC_STAT_AREA] >= min_area
+    keep[0] = False
+    solid = (np.isin(labels, np.nonzero(keep)[0])).astype(np.uint8) * 255
     thin_mask = ((ink > 0) & ~(solid > 0)).astype(np.uint8) * 255
     return thin_mask, solid
 
@@ -280,20 +292,88 @@ def skeleton_paths(skeleton: np.ndarray, simplify: float = 1.2,
             array = cv2.approxPolyDP(array.reshape(-1, 1, 2), simplify, False).reshape(-1, 2)
         if len(array) >= 2:
             result.append([(float(x), float(y)) for x, y in array])
-    return result
+    return join_skeleton_paths(result, tol=max(3.5, simplify * 3.0))
 
 
-def solid_polylines(mask: np.ndarray, simplify: float = 1.2,
-                    min_area: float = 12.0) -> List[List[Tuple[float, float]]]:
-    contours, _ = cv2.findContours(mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
-    result = []
-    for contour in contours:
+def _line_intersection(p1, d1, p2, d2):
+    """两条直线（点 + 方向）求交；平行返回 None。"""
+    det = d1[0] * (-d2[1]) - d1[1] * (-d2[0])
+    if abs(det) < 1e-9:
+        return None
+    rx, ry = p2[0] - p1[0], p2[1] - p1[1]
+    t = (rx * (-d2[1]) - ry * (-d2[0])) / det
+    return (p1[0] + d1[0] * t, p1[1] + d1[1] * t)
+
+
+def _inward_direction(path, end: int):
+    if end == 0:
+        return path[1][0] - path[0][0], path[1][1] - path[0][1]
+    return path[-1][0] - path[-2][0], path[-1][1] - path[-2][1]
+
+
+def join_skeleton_paths(paths: List[List[Tuple[float, float]]],
+                        tol: float = 3.0) -> List[List[Tuple[float, float]]]:
+    """把骨架断开造成的近邻端点拼成直角交点，避免转角出现缺口/倒角。"""
+    endpoints = [(index, end) for index, path in enumerate(paths)
+                 if len(path) >= 2 for end in (0, -1)]
+    used = set()
+    for first in range(len(endpoints)):
+        if first in used:
+            continue
+        i, ei = endpoints[first]
+        pa = paths[i][ei]
+        for second in range(first + 1, len(endpoints)):
+            if second in used:
+                continue
+            j, ej = endpoints[second]
+            if i == j and not (ei != ej and len(paths[i]) > 2):
+                continue
+            pb = paths[j][ej]
+            gap = math.dist(pa, pb)
+            if gap > tol:
+                continue
+            da = _inward_direction(paths[i], ei)
+            db = _inward_direction(paths[j], ej)
+            la = math.hypot(*da)
+            lb = math.hypot(*db)
+            if la < 1e-6 or lb < 1e-6:
+                continue
+            # 两段方向近似垂直时，拼到直线交点；否则拼到中点
+            cosine = abs((da[0] * db[0] + da[1] * db[1]) / (la * lb))
+            if not (cosine <= 0.25 or cosine >= 0.95):
+                continue          # 只拼直角或共线端点，避免误连邻近文字笔画
+            target = None
+            if cosine <= 0.25:
+                cross = _line_intersection(pa, da, pb, db)
+                if cross and math.dist(cross, pa) <= tol * 2 and math.dist(cross, pb) <= tol * 2:
+                    target = cross
+            if target is None:
+                target = ((pa[0] + pb[0]) / 2, (pa[1] + pb[1]) / 2)
+            paths[i][ei] = target
+            paths[j][ej] = target
+            pa = target
+            used.add(first)
+            used.add(second)
+    return paths
+
+
+def solid_shapes(mask: np.ndarray, simplify: float = 1.2,
+                 min_area: float = 12.0) -> List[List[List[Tuple[float, float]]]]:
+    """实心区域 → 每个连通域一组轮廓（外轮廓 + 孔），用于多段线 + 实心填充。"""
+    contours, hierarchy = cv2.findContours(mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
+    groups: Dict[int, List[List[Tuple[float, float]]]] = {}
+    for index, contour in enumerate(contours):
         if cv2.contourArea(contour) < min_area:
             continue
-        approx = cv2.approxPolyDP(contour, simplify, True)
-        if len(approx) >= 3:
-            result.append([(float(point[0][0]), float(point[0][1])) for point in approx])
-    return result
+        # 实心区域端部要保直角，简化容差压到 0.5px 以内
+        approx = cv2.approxPolyDP(contour, min(simplify, 0.5), True)
+        if len(approx) < 3:
+            continue
+        parent = hierarchy[0][index][3] if hierarchy is not None else -1
+        root = index if parent < 0 else parent
+        groups.setdefault(root, []).append(
+            [(float(point[0][0]), float(point[0][1])) for point in approx])
+    return list(groups.values())
 
 
 def remove_regions(ink: np.ndarray, boxes: Sequence[Tuple[int, int, int, int]]) -> None:
@@ -326,7 +406,7 @@ def render_overlay(image_path: str, thin_paths, solid_paths, texts,
 # ---------------------------------------------------------------- DXF
 
 def write_dxf(path: str, thin_paths: List[List[Tuple[float, float]]],
-              solid_paths: List[List[Tuple[float, float]]],
+              solid_shapes: List[List[List[Tuple[float, float]]]],
               texts: List[Dict[str, Any]], working_size: Tuple[int, int],
               px_per_mm: Optional[float] = None,
               text_height: Optional[float] = None) -> Dict[str, Any]:
@@ -340,16 +420,23 @@ def write_dxf(path: str, thin_paths: List[List[Tuple[float, float]]],
     doc = ezdxf.new("R2010")
     doc.header["$INSUNITS"] = 4 if px_per_mm else 0
     annotation_defaults.ensure_text_styles(doc)
-    for name, color in (("A-SKETCH", 7), ("A-SOLID", 8), ("A-TEXT", 7)):
+    for name, color in (("A-SKETCH", 7), ("A-SOLID", 8),
+                        ("A-HATCH", 8), ("A-TEXT", 7)):
         if name not in doc.layers:
             doc.layers.new(name, dxfattribs={"color": color})
     model = doc.modelspace()
     for polyline in thin_paths:
         model.add_lwpolyline([point(x, y) for x, y in polyline],
                              dxfattribs={"layer": "A-SKETCH"})
-    for polyline in solid_paths:
-        model.add_lwpolyline([point(x, y) for x, y in polyline], close=True,
-                             dxfattribs={"layer": "A-SOLID"})
+    for shape in solid_shapes:
+        for polyline in shape:
+            model.add_lwpolyline([point(x, y) for x, y in polyline], close=True,
+                                 dxfattribs={"layer": "A-SOLID"})
+        hatch = model.add_hatch(color=8, dxfattribs={"layer": "A-HATCH"})
+        hatch.set_solid_fill(color=8)
+        for polyline in shape:
+            hatch.paths.add_polyline_path(
+                [point(x, y) for x, y in polyline], is_closed=True)
     for text in texts:
         rotation = float(text.get("rotation", 0.0))
         if rotation:
@@ -364,9 +451,11 @@ def write_dxf(path: str, thin_paths: List[List[Tuple[float, float]]],
                                             "style": annotation_defaults.TEXT_STYLE})
         entity.set_placement(insert)
     doc.saveas(path)
+    solid_paths = sum(len(shape) for shape in solid_shapes)
     return {"path": path,
-            "entities": len(thin_paths) + len(solid_paths) + len(texts),
-            "sketch": len(thin_paths), "solid": len(solid_paths), "texts": len(texts)}
+            "entities": len(thin_paths) + solid_paths + len(solid_shapes) + len(texts),
+            "sketch": len(thin_paths), "solid": len(solid_shapes),
+            "solid_paths": solid_paths, "texts": len(texts)}
 
 
 # ---------------------------------------------------------------- 主流程
@@ -374,13 +463,22 @@ def write_dxf(path: str, thin_paths: List[List[Tuple[float, float]]],
 def trace(path: str, max_side: int = 2048, solid_px: float = 16.0,
           simplify: float = 1.2, ocr: bool = False,
           keep_text_strokes: bool = False,
-          solid_contours: bool = False,
+          all_skeleton: bool = False,
           scale: float = annotation_defaults.SCALE,
           paper_text_height: float = annotation_defaults.PAPER_TEXT_HEIGHT,
           languages: Sequence[str] = ("zh-Hans", "en-US"),
           px_per_mm: Optional[float] = None,
           out_dxf: Optional[str] = None,
-          overlay: Optional[str] = None) -> Dict[str, Any]:
+          overlay: Optional[str] = None,
+          remove_grid: bool = False,
+          snap_geometry: bool = False,
+          grid_min_coverage: float = 0.55,
+          grid_min_lines: int = 4,
+          grid_spacing_tol: float = 0.10,
+          grid_max_thickness: float = 4.0,
+          snap_tol: float = 2.5,
+          snap_angle_tol: float = 2.0,
+          axis_snap_tol: float = 1.5) -> Dict[str, Any]:
     started = _timed()
     ink, gray, source_scale, threshold = load_ink(path, max_side)
     height, width = ink.shape[:2]
@@ -431,39 +529,63 @@ def trace(path: str, max_side: int = 2048, solid_px: float = 16.0,
         remove_regions(ink, boxes)
     stats["text_strokes_removed"] = bool(ocr and not keep_text_strokes)
 
+    preprocess_ms = 0
+    grid_stats: Optional[Dict[str, Any]] = None
+    if remove_grid:
+        grid_started = _timed()
+        ink, grid_stats = image_preprocess.remove_background_grid(
+            ink, min_coverage=grid_min_coverage, min_lines=grid_min_lines,
+            spacing_tol=grid_spacing_tol, max_thickness=grid_max_thickness)
+        preprocess_ms += _ms(grid_started)
+    stats["preprocess"] = {"grid": grid_stats, "snap": None}
+
     split_started = _timed()
-    if solid_contours:
-        # 显式要求保留实心形状时：粗区走轮廓，细线走骨架
+    if all_skeleton:
+        # 强制整张图都用单线骨架（旧的纯线稿行为）
+        skeleton = thin(ink, 40) if ink.any() else ink
+        thin_paths = skeleton_paths(skeleton, simplify)
+        solid_groups: List[List[List[Tuple[float, float]]]] = []
+    else:
+        # 默认：细线走骨架；真正填满的区域（墙/柱/色块）走轮廓 + 实心填充
         thin_mask, solid_mask = split_strokes(ink, solid_px)
         skeleton = thin(thin_mask, 40) if thin_mask.any() else thin_mask
         thin_paths = skeleton_paths(skeleton, simplify)
-        solid_paths = solid_polylines(solid_mask, simplify)
-    else:
-        # 默认：所有墨迹都走 1px 骨架，一条笔画只输出一条 PLINE
-        skeleton = thin(ink, 40) if ink.any() else ink
-        thin_paths = skeleton_paths(skeleton, simplify)
-        solid_paths = []
+        solid_groups = solid_shapes(solid_mask, simplify)
+    snap_stats: Optional[Dict[str, Any]] = None
+    if snap_geometry:
+        snap_started = _timed()
+        thin_paths, snap_stats = image_preprocess.snap_paths(
+            thin_paths, endpoint_tol=snap_tol, angle_tol_deg=snap_angle_tol,
+            axis_tol=axis_snap_tol)
+        preprocess_ms += _ms(snap_started)
+    stats["preprocess"]["snap"] = snap_stats
+    stats["preprocess_ms"] = preprocess_ms
     stats["trace_ms"] = _ms(split_started)
     stats["sketch"] = len(thin_paths)
-    stats["solid"] = len(solid_paths)
-    stats["points"] = sum(len(p) for p in thin_paths + solid_paths)
+    stats["solid"] = len(solid_groups)
+    stats["solid_paths"] = sum(len(group) for group in solid_groups)
+    stats["points"] = (sum(len(p) for p in thin_paths)
+                       + sum(len(p) for group in solid_groups for p in group))
 
     if overlay:
-        render_overlay(path, thin_paths, solid_paths, texts,
+        render_overlay(path, thin_paths,
+                       [p for group in solid_groups for p in group], texts,
                        (height, width), overlay)
         stats["overlay"] = overlay
     if out_dxf:
         fixed_height = (paper_text_height * scale) if effective_ppm else None
-        wrote = write_dxf(out_dxf, thin_paths, solid_paths, texts,
+        wrote = write_dxf(out_dxf, thin_paths, solid_groups, texts,
                           (height, width), effective_ppm, fixed_height)
-        stats.update({key: wrote[key] for key in ("entities", "sketch", "solid", "texts")})
+        stats.update({key: wrote[key] for key in
+                      ("entities", "sketch", "solid", "solid_paths", "texts")})
         stats["dxf"] = out_dxf
         stats["annotation"] = annotation_defaults.summary()
         stats["text_height_mm"] = fixed_height
     stats["ms"] = _ms(started)
     stats["notes"] = [
         ("所有墨迹走骨架，一条笔画输出一条多段线；曲线以折线近似"
-         if not solid_contours else "细线走骨架、粗区域走轮廓"),
+         if all_skeleton else
+         "细线走骨架；填充的墙/柱/色块走闭合轮廓 + 实心填充，不压中线"),
         "OCR 文本在 A-TEXT；默认不开启，开启后默认移除原文字笔画",
     ]
     return stats
@@ -476,9 +598,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--preview", help="叠加预览 PNG")
     parser.add_argument("--max-side", type=int, default=2048, help="工作画布长边（0=原图）")
     parser.add_argument("--solid-px", type=float, default=16.0,
-                        help="仅在 --solid-contours 时生效：厚度达到该值判为实心区域")
-    parser.add_argument("--solid-contours", action="store_true",
-                        help="粗区域走轮廓（默认所有墨迹走单线骨架）")
+                        help="填充区域的最小厚度（像素，默认 16）")
+    parser.add_argument("--all-skeleton", action="store_true",
+                        help="强制整张图走单线骨架（默认保留填充墙/柱的轮廓+填充）")
     parser.add_argument("--simplify", type=float, default=1.2, help="多段线简化容差（像素）")
     parser.add_argument("--px-per-mm", type=float, help="给定时输出毫米；否则输出像素")
     parser.add_argument("--ocr-text", action="store_true", help="OCR 文字写成 A-TEXT")
@@ -492,6 +614,26 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help="纸面文字高度 mm（默认 3.5）")
     parser.add_argument("--check-ocr", action="store_true",
                         help="只检查 OCR 后端是否可用（不转换）")
+    parser.add_argument("--remove-grid", action="store_true",
+                        help="先去除等距背景网格（默认关闭，保持保真）")
+    parser.add_argument("--snap-geometry", action="store_true",
+                        help="共线合并 + 端点/轴向吸附（默认关闭）")
+    parser.add_argument("--clean-geometry", action="store_true",
+                        help="等价于 --remove-grid --snap-geometry")
+    parser.add_argument("--grid-min-coverage", type=float, default=0.55,
+                        help="网格候选线的最小贯穿率（默认 0.55）")
+    parser.add_argument("--grid-min-lines", type=int, default=4,
+                        help="至少几条等距线才判为网格（默认 4）")
+    parser.add_argument("--grid-spacing-tol", type=float, default=0.10,
+                        help="网格间距容差比例（默认 0.10）")
+    parser.add_argument("--grid-max-thickness", type=float, default=4.0,
+                        help="只移除不超过该厚度的网格线（像素，默认 4）")
+    parser.add_argument("--snap-tol", type=float, default=2.5,
+                        help="端点吸附容差（像素，默认 2.5）")
+    parser.add_argument("--snap-angle-tol", type=float, default=2.0,
+                        help="共线合并角度容差（度，默认 2）")
+    parser.add_argument("--axis-snap-tol", type=float, default=1.5,
+                        help="水平/垂直吸附容差（像素，默认 1.5）")
     parser.add_argument("--pretty", action="store_true")
     args = parser.parse_args(argv)
     if args.check_ocr:
@@ -504,11 +646,20 @@ def main(argv: Optional[List[str]] = None) -> int:
         stats = trace(args.image, max_side=args.max_side, solid_px=args.solid_px,
                       simplify=args.simplify, ocr=args.ocr_text,
                       keep_text_strokes=args.keep_text_strokes,
-                      solid_contours=args.solid_contours,
+                      all_skeleton=args.all_skeleton,
                       scale=args.scale, paper_text_height=args.paper_height,
                       languages=tuple(args.ocr_langs.split(",")),
                       px_per_mm=args.px_per_mm, out_dxf=args.out_dxf,
-                      overlay=args.preview)
+                      overlay=args.preview,
+                      remove_grid=args.remove_grid or args.clean_geometry,
+                      snap_geometry=args.snap_geometry or args.clean_geometry,
+                      grid_min_coverage=args.grid_min_coverage,
+                      grid_min_lines=args.grid_min_lines,
+                      grid_spacing_tol=args.grid_spacing_tol,
+                      grid_max_thickness=args.grid_max_thickness,
+                      snap_tol=args.snap_tol,
+                      snap_angle_tol=args.snap_angle_tol,
+                      axis_snap_tol=args.axis_snap_tol)
     except RuntimeError as exc:
         print(json.dumps({"ok": False, "error": str(exc),
                           "ocr_hint": ocr_install_hint()}, ensure_ascii=False))

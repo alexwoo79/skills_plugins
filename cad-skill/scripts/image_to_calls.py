@@ -16,6 +16,7 @@
 例：
   python3 image_to_calls.py plan.png --out-dxf plan.dxf
   python3 image_to_calls.py plan.png --px-per-mm 0.16686 --ocr-text --out-dxf plan.dxf
+  python3 image_to_calls.py plan.png --clean-geometry --out-dxf plan.clean.dxf
   python3 image_to_calls.py plan.png --mode walls --px-per-mm 0.16686 \
       --out-plan plan.json --out-calls calls.json --preview check.png
 """
@@ -35,6 +36,8 @@ try:
     import cv2
 except ImportError:  # 纯函数（合并/配对/分组）仍可测试
     cv2 = None
+
+import image_preprocess
 
 EXIT_OK, EXIT_FAILURE, EXIT_USAGE = 0, 1, 2
 
@@ -97,6 +100,7 @@ def _merge_cluster(cluster: List[Dict[str, float]], join_gap: float) -> List[Dic
     result: List[Dict[str, float]] = []
     cur = dict(cluster[0])
     weight = cur["length"]
+    merged = False
     for seg in cluster[1:]:
         if seg["start"] <= cur["end"] + join_gap:
             total = weight + seg["length"]
@@ -104,12 +108,32 @@ def _merge_cluster(cluster: List[Dict[str, float]], join_gap: float) -> List[Dic
             weight = total
             cur["end"] = max(cur["end"], seg["end"])
             cur["length"] = cur["end"] - cur["start"]
+            merged = True
         else:
+            if merged:
+                _sync_xy(cur)
             result.append(cur)
             cur = dict(seg)
             weight = cur["length"]
+            merged = False
+    if merged:
+        _sync_xy(cur)
     result.append(cur)
     return result
+
+
+def _sync_xy(segment: Dict[str, float]) -> None:
+    """把合并后的 offset/start/end 写回 x1/y1/x2/y2。
+
+    旧实现只改 offset，写 DXF 时却优先读 x1/y1/x2/y2，导致共线合并"看起来合并了"，
+    实际导出还是原来的碎线。这里统一以合并后的轴向表示为准。
+    """
+    if segment["orient"] == "H":
+        segment["x1"], segment["y1"] = segment["start"], segment["offset"]
+        segment["x2"], segment["y2"] = segment["end"], segment["offset"]
+    else:
+        segment["x1"], segment["y1"] = segment["offset"], segment["start"]
+        segment["x2"], segment["y2"] = segment["offset"], segment["end"]
 
 
 def snap_to_grid(value: float, grid: float, max_shift: float) -> float:
@@ -855,7 +879,8 @@ def resolve_scale(args) -> Optional[float]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="线稿栅格图 → 忠实描线 DXF（默认）/ 墙体与洞口调用序列（--mode walls）",
-        epilog="hybrid 只使用 --max-side/--simplify/--solid-*/OCR/--scale/--paper-height；"
+        epilog="hybrid 默认使用 --max-side/--simplify/--solid-*/OCR/--scale/--paper-height；"
+               "--remove-grid/--snap-geometry/--clean-geometry 对两个后端都生效；"
                "墙/洞口与纠偏参数用于 --mode walls 或 --tracer hough。")
     parser.add_argument("image")
     parser.add_argument("--mode", choices=("walls", "lines"), default="lines",
@@ -866,9 +891,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-side", type=int, default=2048,
                         help="hybrid 工作画布长边（默认 2048；0=原图）")
     parser.add_argument("--solid-px", type=float, default=16.0,
-                        help="hybrid + --solid-contours：厚度达到该值判为实心区域（像素）")
-    parser.add_argument("--solid-contours", action="store_true",
-                        help="hybrid：粗区域走轮廓（默认所有墨迹走单线骨架）")
+                        help="hybrid：填充区域的最小厚度（像素，默认 16）")
+    parser.add_argument("--all-skeleton", action="store_true",
+                        help="hybrid：强制整张图走单线骨架（默认保留填充墙/柱）")
     parser.add_argument("--simplify", type=float, default=1.2,
                         help="hybrid：多段线简化容差（像素）")
     parser.add_argument("--ocr-text", action="store_true",
@@ -912,6 +937,26 @@ def build_parser() -> argparse.ArgumentParser:
                         help="先纠偏（仅 structured/hough）")
     parser.add_argument("--despeckle", action="store_true",
                         help="中值去噪（仅 structured/hough）")
+    parser.add_argument("--remove-grid", action="store_true",
+                        help="预处理：去除等距背景网格（默认关闭，保持保真）")
+    parser.add_argument("--snap-geometry", action="store_true",
+                        help="预处理：共线合并 + 端点/轴向吸附（默认关闭）")
+    parser.add_argument("--clean-geometry", action="store_true",
+                        help="等价于 --remove-grid --snap-geometry")
+    parser.add_argument("--grid-min-coverage", type=float, default=0.55,
+                        help="网格候选线的最小贯穿率（默认 0.55）")
+    parser.add_argument("--grid-min-lines", type=int, default=4,
+                        help="至少几条等距线才判为网格（默认 4）")
+    parser.add_argument("--grid-spacing-tol", type=float, default=0.10,
+                        help="网格间距容差比例（默认 0.10）")
+    parser.add_argument("--grid-max-thickness", type=float, default=4.0,
+                        help="只移除不超过该厚度的网格线（像素，默认 4）")
+    parser.add_argument("--snap-tol", type=float, default=2.5,
+                        help="端点吸附容差（像素，默认 2.5）")
+    parser.add_argument("--snap-angle-tol", type=float, default=2.0,
+                        help="共线合并角度容差（度，默认 2）")
+    parser.add_argument("--axis-snap-tol", type=float, default=1.5,
+                        help="水平/垂直吸附容差（像素，默认 1.5）")
     parser.add_argument("--stairs", action="store_true",
                         help="识别直跑楼梯并写入 plan.json（等距平行踏步线；默认只识别墙与洞口）")
     parser.add_argument("--out-plan", help="输出 plan.json")
@@ -953,11 +998,20 @@ def main(argv=None) -> int:
                 args.image, max_side=args.max_side, solid_px=args.solid_px,
                 simplify=args.simplify, ocr=args.ocr_text,
                 keep_text_strokes=args.keep_text_strokes,
-                solid_contours=args.solid_contours,
+                all_skeleton=args.all_skeleton,
                 scale=args.scale, paper_text_height=args.paper_height,
                 languages=tuple(args.ocr_langs.split(",")),
                 px_per_mm=scale if calibrated else None,
-                out_dxf=args.out_dxf, overlay=args.preview)
+                out_dxf=args.out_dxf, overlay=args.preview,
+                remove_grid=args.remove_grid or args.clean_geometry,
+                snap_geometry=args.snap_geometry or args.clean_geometry,
+                grid_min_coverage=args.grid_min_coverage,
+                grid_min_lines=args.grid_min_lines,
+                grid_spacing_tol=args.grid_spacing_tol,
+                grid_max_thickness=args.grid_max_thickness,
+                snap_tol=args.snap_tol,
+                snap_angle_tol=args.snap_angle_tol,
+                axis_snap_tol=args.axis_snap_tol)
         except RuntimeError as exc:
             json.dump({"ok": False, "error": str(exc),
                        "ocr_hint": sketch_trace.ocr_install_hint()},
@@ -977,10 +1031,25 @@ def main(argv=None) -> int:
         print()
         return EXIT_FAILURE
 
+    grid_stats = None
+    if args.remove_grid or args.clean_geometry:
+        binary, grid_stats = image_preprocess.remove_background_grid(
+            binary, min_coverage=args.grid_min_coverage,
+            min_lines=args.grid_min_lines, spacing_tol=args.grid_spacing_tol,
+            max_thickness=args.grid_max_thickness)
+
     # 标定过就按毫米；没标定时 min_line_mm 没有意义（1mm=1px 会把短线全滤掉）
     min_length = (max(8.0, args.min_line_mm * scale) if calibrated
                   else max(4.0, args.min_line_px))
     segments = detect_segments(binary, min_length, args.max_gap_px, args.hough_threshold, args.angle_tol)
+    snap_stats = None
+    if args.snap_geometry or args.clean_geometry:
+        segments, snap_stats = image_preprocess.snap_segments(
+            segments, tol=args.snap_tol, angle_tol_deg=args.snap_angle_tol)
+        for segment in segments:
+            segment["class"] = classify(segment, args.angle_tol)
+            if segment["class"] == "D":
+                segment["orient"] = "D"
     axis = [s for s in segments if s["orient"] in ("H", "V")]
     diagonals = [s for s in segments if s["orient"] == "D"]
     merged = merge_collinear(axis, args.merge_tol * scale, args.join_gap * scale)
@@ -996,6 +1065,9 @@ def main(argv=None) -> int:
     jamb_segments = detect_segments(binary, max(6.0, 0.5 * args.min_wall * scale),
                                     args.max_gap_px, max(15, args.hough_threshold // 2),
                                     args.angle_tol)
+    if args.snap_geometry or args.clean_geometry:
+        jamb_segments, _ = image_preprocess.snap_segments(
+            jamb_segments, tol=args.snap_tol, angle_tol_deg=args.snap_angle_tol)
     grouped = group_wall_runs(walls, args.merge_tol * scale, args.join_gap * scale,
                               args.min_opening * scale, args.max_opening * scale,
                               args.door_max * scale)
@@ -1040,6 +1112,7 @@ def main(argv=None) -> int:
         "door_swings_reclassified": swings["reclassified"],
         "stairs_detected": len(stair_candidates),
         "unpaired_lines": len(leftovers),
+        "preprocess": {"grid": grid_stats, "snap": snap_stats},
         "notes": [
             ("忠实描线：未做墙体替换/门窗推断，图元按检测结果原样保留"
              if args.mode == "lines" else "结构化模式：墙体/洞口为推断结果"),

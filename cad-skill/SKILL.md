@@ -52,6 +52,8 @@ Codex 在 macOS / Linux 上时**不能**直接画图：可以用 `plan_render.py
 | 图元多、嫌慢，想选批量脚本还是 DXF | `references/performance.md` |
 | 想要一份照抄就能跑通的两居室示例 | `assets/example-two-bedroom/`（`plan.json` + `runbook.md`） |
 | 手上是图片/扫描件，想转 DXF | `references/image-to-dxf.md`（用法）+ `references/image-vectorize.md`（算法） |
+| 图片有背景网格/碎线，想做前后 DXF 对比 | `references/image-to-dxf.md` + `scripts/dxf_overlay_compare.py` |
+| 想了解商用 image → DWG/DXF 的技术架构 | `references/commercial-image-to-dxf.md` |
 | 字体、标注样式、字高与比例 | `references/annotation-defaults.md` |
 | 想知道这轮优化做了什么、哪些暂缓 | `references/roadmap.md` |
 
@@ -132,13 +134,25 @@ python3 scripts/image_to_calls.py plan.png --px-per-mm 0.16686 \
 # 结构化墙体/洞口/调用序列
 python3 scripts/image_to_calls.py plan.png --mode walls --px-per-mm 0.16686 \
     --out-plan plan.json --out-calls calls.json
+
+# 有背景网格/碎线：先清理，再出 DXF
+python3 scripts/image_to_calls.py plan.png --clean-geometry \
+    --out-dxf plan.clean.dxf
+
+# 同一张图做前后叠加对比（红=前，绿=后，黄=重合）
+python3 scripts/image_to_calls.py plan.png --out-dxf plan.before.dxf
+python3 scripts/dxf_overlay_compare.py plan.png plan.before.dxf plan.clean.dxf \
+    --out compare.png
 ```
 
-- 图层：默认 `A-SKETCH`（一条笔画一条 PLINE），OCR 文字 `A-TEXT`；
-  `--solid-contours` 才产生 `A-SOLID`；结构化模式为 `A-WALL/A-DOOR/A-WINDOW/A-TRACE`。
+- 图层：细线 `A-SKETCH`（一条笔画一条 PLINE）；**填充的墙/柱**保留为 `A-SOLID`
+  闭合轮廓 + `A-HATCH` 实心填充，不压成中线；OCR 文字 `A-TEXT`。
+  `--all-skeleton` 可强制全部走单线。结构化模式为 `A-WALL/A-DOOR/A-WINDOW/A-TRACE`。
 - 单位：没标定输出像素（`$INSUNITS=0`）；给了 `--px-per-mm` / `--calibrate` 才是毫米。
 - 注释：默认 `TZ_HZ`（`txt.shx + gbcbig.shx`）、1:100、3.5mm→350mm、建筑斜线；
   见 `references/annotation-defaults.md`。
+- 预处理：`--clean-geometry` = `--remove-grid --snap-geometry`。默认关闭，避免把真实轴网
+  当成背景网格；误删时调高 `--grid-min-lines` 或只开 `--snap-geometry`。
 - 完整参数、尺寸链标定、OCR、质量与排障：`references/image-to-dxf.md`。
 
 其他图种：

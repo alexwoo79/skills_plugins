@@ -29,10 +29,11 @@
 `image_to_calls.py` 的默认出口是 `--tracer hybrid`，目标不是“抽墙”，而是**保真复刻线稿**：
 
 1. 长边归一化到 `--max-side`（默认 2048），自适应 Otsu；
-2. **所有墨迹细化成 1px 骨架**，按端点/交点切图走线，再用 Douglas-Peucker
+2. **细描边线**细化成 1px 骨架，按端点/交点切图走线，再用 Douglas-Peucker
    简化成多段线（`A-SKETCH`）；一条笔画只输出一条 PLINE，圆弧/曲线保留为折线；
-3. 只有显式 `--solid-contours` 时，才按 `--solid-px` 把粗区域分流走外轮廓 + 孔
-   （`A-SOLID`）；默认不会把描边线轮廓化成双线；
+3. **填充区域**（局部厚度 ≥ `--solid-px`，如实心墙、柱、色块）走外轮廓 + 孔
+   （`A-SOLID`）并加 SOLID 填充（`A-HATCH`），不压成中线；
+   `--all-skeleton` 可强制整张图都走单线；
 4. 可选 `--ocr-text`：识别文字写成 `TEXT`（`A-TEXT`），并默认移除原文字笔画；
    `--keep-text-strokes` 可保留。macOS 用 Vision，默认 `zh-Hans,en-US`（中文优先），
    其他平台回退 Tesseract；Windows 需安装 Tesseract + pytesseract + `chi_sim` 语言包，
@@ -46,8 +47,8 @@
 | 模式 | 实体 | 文本 | 耗时 |
 | --- | --- | --- | --- |
 | 参考服务（NASJI） | 401 多段线 | 7（英文） | 3608 ms |
-| 本项目 hybrid（单线骨架） | 1075 条多段线 | 0 | 406 ms |
-| 本项目 hybrid + OCR | 764 线 + 11 文本 | 11（含 BATH） | 761 ms |
+| 本项目 hybrid（默认） | 1024 细线 + 12 填充区域 | 0 | 361 ms |
+| 本项目 hybrid + OCR | 719 线 + 12 填充 + 11 文本 | 11（含 BATH） | 667 ms |
 
 ## 依赖
 
@@ -101,6 +102,57 @@ python3 scripts/image_to_calls.py scan.png --mode lines \
 python3 scripts/cad_direct.py draw --calls calls.json
 python3 scripts/cad_direct.py script --file plan.scr    # plan_to_scr.py 生成后
 ```
+
+## 预处理：背景网格与几何吸附
+
+默认仍走“保真”路径，不清理任何墨迹。只有确认图上有方格纸/瓷砖底纹，或成品 DXF 里
+碎线、断头明显时，才加 `--clean-geometry`：
+
+```bash
+python3 scripts/image_to_calls.py scan.png --clean-geometry \
+    --px-per-mm 0.2 --out-dxf clean.dxf
+```
+
+### 背景网格去除（`--remove-grid`）
+
+算法只处理“贯穿画布 + 细 + 近似等距”的线：
+
+1. 对二值墨迹做行/列投影，找贯穿率 ≥ `--grid-min-coverage`（默认 0.55）的细线；
+2. 对候选位置按间距聚类，至少 `--grid-min-lines` 条（默认 4）成等差数列才判为网格；
+3. 只清这些线附近的窄带；用距离变换和垂直/水平支撑保护粗笔画与穿网而过的墙线。
+
+这样不会因为“线很长”就删掉两根普通墙线。但真实轴网本身也可能等距，所以默认关闭；
+误删时先调高 `--grid-min-lines`，或改用 `--snap-geometry` 只做几何清理。
+
+### 共线/端点吸附（`--snap-geometry`）
+
+hybrid 后端在骨架上做，hough/`walls` 后端在线段上做，步骤相同：
+
+1. **共线合并**：端点相邻、方向近似相反、且都贴近对方延长线的两段接成一条；
+2. **轴向吸附**：整条近似水平/垂直的折线统一吸到一个坐标，消除 0.1–1px 台阶；
+3. **端点吸附**：近邻端点吸到同一点；近似直角时吸到两线交点；
+4. **T 形接头**：端点投影到附近长线段上，补上骨架/霍夫断开造成的小缺口；
+5. **共线点压缩**：删掉落在相邻两点连线上的中间点，减少 DXF 顶点数。
+
+所有动作都受像素容差限制（`--snap-tol` 默认 2.5px），不会把相距很远的线硬连。
+
+### 前后叠加对比
+
+```bash
+python3 scripts/image_to_calls.py scan.png --out-dxf before.dxf
+python3 scripts/image_to_calls.py scan.png --clean-geometry --out-dxf after.dxf
+python3 scripts/dxf_overlay_compare.py scan.png before.dxf after.dxf \
+    --out compare.png
+```
+
+红=前独有，绿=后独有，黄=重合；背景保留原图灰度。有标定时补 `--px-per-mm` 与
+`--origin`，`--max-side` 要与描图时一致。JSON 里的 `entity_count`、
+`polyline_length`、`dangling_endpoints` 用于量化碎片变化，但仍必须看叠加图确认
+墙、门窗、文字没有被误删。
+
+合成回归图（`tests/test_sketch_trace.py` 的 400×300 网格 + 矩形）上，开启前后
+`A-SKETCH` 实体从 360 降到 12，识别到的网格线为水平 10 条、垂直 15 条；这是
+“网格被清掉”的回归指标，不代表真实图纸的精度。
 
 ## 实测精度（可复现）
 

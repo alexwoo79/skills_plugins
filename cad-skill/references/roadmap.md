@@ -21,6 +21,8 @@
 | P1+ | 混合描线（骨架 + 实心轮廓） | `scripts/sketch_trace.py` | demo 图 601 细线 + 85 轮廓 |
 | P1+ | OCR 文本层（中英/可选） | `sketch_trace.ocr_texts` + `ocr_vision.swift` | demo 10 文本，含 BATH |
 | P1+ | 2048 工作画布与分阶段计时 | `sketch_trace.load_ink` / stats | `working_size`、`ocr_ms`、`trace_ms` |
+| P1+ | 背景网格去除 + 共线/端点吸附 | `scripts/image_preprocess.py`、`--clean-geometry` | 网格回归图 360→12 条 `A-SKETCH`；`test_image_preprocess.py` |
+| P1+ | 前后 DXF 同图叠加 | `scripts/dxf_overlay_compare.py` | 红/绿/黄三色 + 实体/长度/断头统计；`test_dxf_overlay_compare.py` |
 | P1+ | 注释安全默认（字体/标注） | `scripts/annotation_defaults.py` | `TZ_HZ` + 1:100/3.5mm + 建筑斜线 |
 | P2 | 直跑楼梯生成 | `wall_plan.stair_calls` | 踏步线/箭头/文字数量与间距 |
 | P2 | 直跑楼梯识别 | `image_to_calls.detect_stairs --stairs` | 8 步合成楼梯：步数/踏步/宽度 |

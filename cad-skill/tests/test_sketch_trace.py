@@ -45,28 +45,69 @@ class HybridTracerTests(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def test_single_line_skeleton_by_default(self) -> None:
-        """默认所有墨迹走骨架：一条笔画一条多段线，不产生轮廓双线。"""
+    def test_filled_regions_keep_outline_and_hatch(self) -> None:
+        """默认：细线走单线骨架，填充块保留轮廓 + 实心填充。"""
         dxf_path = os.path.join(self.tmp, "out.dxf")
         stats = sketch_trace.trace(self.image, out_dxf=dxf_path)
         self.assertGreaterEqual(stats["sketch"], 2, stats)
-        self.assertEqual(stats["solid"], 0, stats)
+        self.assertGreaterEqual(stats["solid"], 1, stats)
         self.assertIn("trace_ms", stats)
         self.assertIn("ms", stats)
         if ezdxf is not None:
             doc = ezdxf.readfile(dxf_path)
             layers = {entity.dxf.layer for entity in doc.modelspace()}
-            self.assertEqual(layers, {"A-SKETCH"})
+            self.assertTrue({"A-SKETCH", "A-SOLID", "A-HATCH"}.issubset(layers))
             self.assertEqual(doc.header.get("$INSUNITS"), 0)   # 未标定 → 像素
 
-    def test_solid_contours_are_opt_in(self) -> None:
-        stats = sketch_trace.trace(self.image, solid_contours=True, solid_px=16,
-                                   out_dxf=os.path.join(self.tmp, "solid.dxf"))
-        self.assertGreaterEqual(stats["solid"], 1, stats)
+    def test_all_skeleton_forces_single_lines(self) -> None:
+        stats = sketch_trace.trace(self.image, all_skeleton=True,
+                                   out_dxf=os.path.join(self.tmp, "allsketch.dxf"))
+        self.assertEqual(stats["solid"], 0, stats)
         if ezdxf is not None:
             layers = {entity.dxf.layer for entity in
-                      ezdxf.readfile(os.path.join(self.tmp, "solid.dxf")).modelspace()}
-            self.assertTrue({"A-SKETCH", "A-SOLID"}.issubset(layers))
+                      ezdxf.readfile(os.path.join(self.tmp, "allsketch.dxf")).modelspace()}
+            self.assertEqual(layers, {"A-SKETCH"})
+
+    def test_solid_ends_are_square(self) -> None:
+        """填充区域的端部必须保留直角，不能被膨胀核倒角。"""
+        if ezdxf is None:
+            self.skipTest("需要 ezdxf")
+        path = os.path.join(self.tmp, "wall.png")
+        canvas = np.full((200, 400), 255, dtype=np.uint8)
+        cv2.rectangle(canvas, (50, 80), (250, 100), 0, -1)   # 200×20 实心条
+        cv2.imwrite(path, canvas)
+        dxf_path = os.path.join(self.tmp, "wall.dxf")
+        sketch_trace.trace(path, solid_px=16, out_dxf=dxf_path)
+        doc = ezdxf.readfile(dxf_path)
+        solids = [entity for entity in doc.modelspace()
+                  if entity.dxf.layer == "A-SOLID"]
+        self.assertTrue(solids)
+        points = [(p[0], p[1]) for p in solids[0].get_points("xy")]
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
+        self.assertAlmostEqual(max(xs) - min(xs), 200, delta=2)
+        self.assertAlmostEqual(max(ys) - min(ys), 20, delta=2)
+        for corner in ((min(xs), min(ys)), (max(xs), min(ys)),
+                       (min(xs), max(ys)), (max(xs), max(ys))):
+            nearest = min(((p[0] - corner[0]) ** 2 + (p[1] - corner[1]) ** 2) ** 0.5
+                          for p in points)
+            self.assertLess(nearest, 2.0, (corner, points))
+
+    def test_line_corners_are_joined(self) -> None:
+        """细线转角要拼成精确直角，不能留下 2–3px 的斜口。"""
+        if ezdxf is None:
+            self.skipTest("需要 ezdxf")
+        dxf_path = os.path.join(self.tmp, "corners.dxf")
+        sketch_trace.trace(self.image, out_dxf=dxf_path)
+        doc = ezdxf.readfile(dxf_path)
+        points = [p for entity in doc.modelspace()
+                  if entity.dxf.layer == "A-SKETCH"
+                  for p in entity.get_points("xy")]
+        # 测试图画的是 (40,40)-(200,200) 的细线矩形；DXF 里 y 已翻转
+        for corner in ((40, 260), (200, 260), (200, 100), (40, 100)):
+            nearest = min(((p[0] - corner[0]) ** 2 + (p[1] - corner[1]) ** 2) ** 0.5
+                          for p in points)
+            self.assertLess(nearest, 1.5, (corner, nearest))
 
     def test_max_side_caps_working_canvas(self) -> None:
         big = os.path.join(self.tmp, "big.png")
@@ -76,6 +117,33 @@ class HybridTracerTests(unittest.TestCase):
         stats = sketch_trace.trace(big, max_side=300)
         self.assertLessEqual(max(stats["working_size"]), 300, stats)
         self.assertEqual(stats["src_size"], [1000, 500])
+
+    def test_grid_removal_and_snap_preprocessing(self) -> None:
+        """默认关闭；开启后应去掉等距网格并减少碎线。"""
+        path = os.path.join(self.tmp, "grid.png")
+        canvas = np.full((300, 400), 255, dtype=np.uint8)
+        for x in range(20, 380, 25):
+            cv2.line(canvas, (x, 20), (x, 280), 40, 2)
+        for y in range(20, 280, 25):
+            cv2.line(canvas, (20, y), (380, y), 40, 2)
+        cv2.rectangle(canvas, (80, 80), (300, 220), 0, 3)
+        cv2.line(canvas, (80, 150), (190, 150), 0, 3)
+        cv2.imwrite(path, canvas)
+
+        raw = sketch_trace.trace(path)
+        cleaned = sketch_trace.trace(path, remove_grid=True, snap_geometry=True)
+        self.assertIsNone(raw["preprocess"]["grid"], raw["preprocess"])
+        self.assertTrue(cleaned["preprocess"]["grid"]["applied"], cleaned["preprocess"])
+        self.assertGreater(cleaned["preprocess"]["grid"]["grid_lines_h"], 0)
+        self.assertGreater(cleaned["preprocess"]["grid"]["grid_lines_v"], 0)
+        self.assertTrue(cleaned["preprocess"]["snap"]["applied"], cleaned["preprocess"])
+        self.assertLess(cleaned["sketch"], raw["sketch"], (raw["sketch"], cleaned["sketch"]))
+        self.assertLessEqual(cleaned["preprocess"]["snap"]["paths_after"],
+                             cleaned["preprocess"]["snap"]["paths_before"])
+
+    def test_clean_geometry_is_opt_in(self) -> None:
+        stats = sketch_trace.trace(self.image)
+        self.assertEqual(stats["preprocess"], {"grid": None, "snap": None})
 
     def test_ocr_text_layer_and_stroke_removal(self) -> None:
         original = sketch_trace.ocr_texts

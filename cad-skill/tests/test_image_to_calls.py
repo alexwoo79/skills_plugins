@@ -264,7 +264,7 @@ class VectorizeTests(unittest.TestCase):
         entities = list(ezdxf.readfile(dxf_path).modelspace())
         self.assertEqual(len(entities), payload["entities"])
         self.assertTrue({entity.dxf.layer for entity in entities}
-                        <= {"A-SKETCH", "A-SOLID", "A-TEXT"})
+                        <= {"A-SKETCH", "A-SOLID", "A-HATCH", "A-TEXT"})
 
     def test_calls_output_feeds_cad_direct(self) -> None:
         """图 → plan.json → calls.json → CAD：整条链路跑通（假 COM）"""
@@ -298,7 +298,7 @@ class VectorizeTests(unittest.TestCase):
         doc = ezdxf.readfile(dxf_path)
         entities = list(doc.modelspace())
         self.assertTrue({entity.dxf.layer for entity in entities}
-                        <= {"A-SKETCH", "A-SOLID", "A-TEXT"})
+                        <= {"A-SKETCH", "A-SOLID", "A-HATCH", "A-TEXT"})
         self.assertEqual(len(entities), payload["entities"])
         self.assertFalse(any(entity.dxftype() == "ARC" for entity in entities))
 
@@ -312,6 +312,14 @@ class VectorizeTests(unittest.TestCase):
         entities = list(ezdxf.readfile(dxf_path).modelspace())
         self.assertEqual({entity.dxf.layer for entity in entities}, {"A-TRACE"})
         self.assertEqual(len(entities), payload["merged_segments"])
+
+    def test_hough_clean_geometry_reports_preprocess(self) -> None:
+        """Hough 后端也要走同一套网格/吸附统计，不能只有 hybrid 生效。"""
+        code, payload = run_cli([self.full, "--tracer", "hough", "--clean-geometry",
+                                 "--px-per-mm", str(PPM), "--origin", ORIGIN])
+        self.assertEqual(code, 0, payload)
+        self.assertIsNotNone(payload["preprocess"]["grid"], payload)
+        self.assertTrue(payload["preprocess"]["snap"]["applied"], payload)
 
     @unittest.skipIf(ezdxf is None, "需要 ezdxf")
     def test_structured_dxf_matches_calls_in_walls_mode(self) -> None:

@@ -26,12 +26,72 @@ python3 scripts/image_to_calls.py plan.png --mode walls --px-per-mm 0.16686 \
 
 `--out-dxf` 之外还可以加 `--preview check.png` 生成叠加预览（绿=骨架线，红=实心轮廓，蓝=OCR 框）。
 
+## 预处理：去背景网格 + 共线/端点吸附
+
+两个步骤都默认关闭，原因是“保真”优先：真实图纸里的轴网、等距墙线也可能长得像背景网格。
+确认图上有方格纸/瓷砖底纹，或 DXF 里碎线、断头明显时再打开：
+
+```bash
+# 一步启用两项
+python3 scripts/image_to_calls.py scan.png --clean-geometry \
+    --out-dxf scan.clean.dxf
+
+# 只去背景网格，不做几何吸附
+python3 scripts/image_to_calls.py scan.png --remove-grid \
+    --out-dxf scan.nogrid.dxf
+
+# 只做共线合并 + 轴向/端点吸附
+python3 scripts/image_to_calls.py scan.png --snap-geometry \
+    --out-dxf scan.snap.dxf
+```
+
+去网格只处理**细、贯穿画布、近似等距**的线；粗笔画和穿网而过的线会被保护。判据与旋钮：
+
+目前只处理正交网格；旋转网格先 `--deskew`（仅 hough/walls），虚线或断续底纹不在自动
+清理范围内，仍建议先用图像工具遮掉。
+
+| 参数 | 默认 | 作用 |
+| --- | --- | --- |
+| `--grid-min-coverage` | 0.55 | 一行/一列墨迹至少要占画布的多少比例 |
+| `--grid-min-lines` | 4 | 至少几条等距线才判为网格；误删真实轴网时调高 |
+| `--grid-spacing-tol` | 0.10 | 网格间距的容差比例 |
+| `--grid-max-thickness` | 4 | 只移除不超过该厚度的线（像素，含抗锯齿/模糊膨胀） |
+| `--snap-tol` | 2.5 | 端点吸附容差（像素） |
+| `--snap-angle-tol` | 2.0 | 共线合并允许的角度误差（度） |
+| `--axis-snap-tol` | 1.5 | 近似水平/垂直线吸到精确轴向的容差（像素） |
+
+吸附会做三件事：把同一直线上的碎段接成一条；把近水平/垂直段吸到精确轴向；把近邻端点
+吸到交点或线段上的 T 形接头。它只改“已经几乎连上”的几何，不会把相距很远的线硬连。
+
+### 同一张图做前后 DXF 叠加
+
+先用同一张图、同一套标定参数各出一次 DXF，再叠加：
+
+```bash
+python3 scripts/image_to_calls.py scan.png --px-per-mm 0.2 \
+    --out-dxf before.dxf
+python3 scripts/image_to_calls.py scan.png --px-per-mm 0.2 \
+    --clean-geometry --out-dxf after.dxf
+python3 scripts/dxf_overlay_compare.py scan.png before.dxf after.dxf \
+    --out compare.png --px-per-mm 0.2 --origin 0,1640
+```
+
+叠加图颜色：**红 = 处理前独有，绿 = 处理后独有，黄 = 两者重合**。背景保留原图灰度，
+方便直接看清理是否误删了墙、门窗或文字。
+
+- 有标定时给 `--px-per-mm`（工作图像的像素/毫米）和 `--origin`；hybrid 的默认原点是
+  工作图像左下角。没有标定时省略这两个参数，脚本按两份 DXF 的联合包围盒自动适配。
+- 如果原图被 `--max-side` 缩小过，给对比脚本同样的 `--max-side`，否则叠加图会按不同画布缩放。
+- 输出 JSON 里有 `entity_count`、`polyline_length`、`dangling_endpoints` 和各自的增量；
+  它们用于判断“碎片是否减少”，不能替代人工看叠加图。
+
 ## 输出图层
 
 | 模式 | 图层 | 内容 |
 | --- | --- | --- |
-| `--mode lines` + `--tracer hybrid`（默认） | `A-SKETCH` | 1px 骨架走出的单线多段线，一条笔画一条 PLINE |
-| 同上 + `--solid-contours` | `A-SOLID` | 粗/实心区域的外轮廓 + 孔（闭合多段线） |
+| `--mode lines` + `--tracer hybrid`（默认） | `A-SKETCH` | 细笔画：1px 骨架走出的单线多段线，一条笔画一条 PLINE |
+| 同上（默认） | `A-SOLID` + `A-HATCH` | 填充的墙/柱：闭合轮廓 + 实心填充，不压中线 |
+| 同上 + `--all-skeleton` | `A-SKETCH` | 强制全部走单线，不保留填充块 |
 | 同上 + `--ocr-text` | `A-TEXT` | OCR 文本，默认中文优先 |
 | `--tracer hough` | `A-TRACE` | 旧版 Hough 直段（只保留直线，曲线会碎） |
 | `--mode walls` | `A-WALL` `A-DOOR` `A-WINDOW` `A-TRACE` | 结构化墙体/门窗 + 未配对线work |
@@ -87,9 +147,12 @@ python3 scripts/image_to_calls.py plan.png --mode walls --px-per-mm 0.16686 \
 
 ## 单线 vs 实心轮廓
 
-- 默认所有墨迹走骨架：墙体边框、家具线、文字笔画都是一条 PLINE，不会出现“描边变双线”。
-- 显式 `--solid-contours` 时，厚度 ≥ `--solid-px`（默认 16px）的连通域走外轮廓 + 孔。
-  适合 logo、实心色块；不适合只想看线稿的平面图。
+- **细描边线**（墙的双线、家具线、文字笔画）：走骨架，一条笔画一条 PLINE，不变双线。
+- 骨架在转角处断开的端点会按直线求交拼回直角，阳角/阴角都正常垂直相交，不留斜口。
+- **填充区域**（实心墙、柱子、色块）：局部厚度 ≥ `--solid-px` 的墨迹按填充区域处理，
+  输出闭合轮廓（`A-SOLID`）+ SOLID 填充（`A-HATCH`），不会压成中线。
+- 填充区域端部保留直角：掩膜用矩形膨胀核，轮廓简化容差压到 0.5px，不做倒角。
+- 如果整张图只想看单线，加 `--all-skeleton`。
 
 ## 常用旋钮
 
@@ -97,13 +160,18 @@ python3 scripts/image_to_calls.py plan.png --mode walls --px-per-mm 0.16686 \
 | --- | --- | --- |
 | `--max-side` | 2048 | 工作画布长边；高清图可设 3400，0=原图 |
 | `--simplify` | 1.2 | 多段线简化容差（像素）；越小越贴原图、点数越多 |
-| `--solid-px` | 16 | 仅 `--solid-contours`：判定实心的厚度阈值 |
+| `--solid-px` | 16 | 填充区域的最小厚度（像素） |
+| `--all-skeleton` | 关 | 强制全部走单线骨架，不保留填充块 |
+| `--clean-geometry` | 关 | 去背景网格 + 共线/端点吸附 |
+| `--grid-min-lines` | 4 | 等距线达到几条才判为背景网格 |
+| `--snap-tol` | 2.5 | 端点吸附容差（像素） |
 | `--min-line-px` | 10 | 未标定时的最短线段（像素） |
 | `--scale` / `--paper-height` | 100 / 3.5 | 注释比例与纸面字高 |
 | `--ocr-langs` | `zh-Hans,en-US` | OCR 语言顺序 |
 
 `--adaptive` / `--deskew` / `--despeckle` 只作用于 `--mode walls` 或 `--tracer hough`；
-hybrid 固定用归一化 + 自适应 Otsu。
+hybrid 固定用归一化 + 自适应 Otsu。`--remove-grid` / `--snap-geometry` / `--clean-geometry`
+对 hybrid 和 hough 两个后端都生效。
 
 ## 质量与边界
 
@@ -121,9 +189,9 @@ hybrid 固定用归一化 + 自适应 Otsu。
 | 文字跑到图外/字号巨大 | 升级到当前版本；标定后字高由 `--paper-height × --scale` 控制 |
 | 中文变问号 | 目标 CAD 缺 `gbcbig.shx`；安装字体或改用 TTF 样式 |
 | `--ocr-text` 报错 | 按返回的 `ocr_hint` 安装；或去掉该参数只出几何 |
-| DXF 打开很卡 | 纹理多；可先用 `--solid-contours`，或降低 `--max-side` |
+| DXF 打开很卡 | 纹理多；可加 `--all-skeleton` 或降低 `--max-side` |
 | 尺寸不对 | 用尺寸链重新标定；未标定时单位是像素，不是毫米 |
-| 墙边框变双线 | 不要加 `--solid-contours`；默认单线骨架 |
+| 空心描边的墙被当成填充 | 调大 `--solid-px`，或加 `--all-skeleton` 全走单线 |
 
 ## 验收
 
