@@ -377,6 +377,68 @@ class CADCraftController:
                 pass
             raise
 
+    # ------------------------------------------------------------ blocks
+
+    def list_blocks(self) -> List[Dict[str, Any]]:
+        result = self.call("engine.execute", {
+            "command": "blocks.list",
+            "params": {},
+        })
+        return result.get("blocks", []) if isinstance(result, dict) else []
+
+    def create_block(self, name: str, base, handles: Sequence[str],
+                     keep: str = "convert",
+                     description: str = "") -> Dict[str, Any]:
+        result = self.call("engine.execute", {
+            "command": "block",
+            "params": {
+                "name": name,
+                "base": _point(base),
+                "handles": list(handles),
+                "keep": keep,
+                "description": description,
+            },
+        })
+        return result if isinstance(result, dict) else {"result": result}
+
+    def insert_block(self, name: str, at, scale=1.0, rotation: float = 0.0,
+                     file: Optional[str] = None, attribs: Optional[Dict[str, str]] = None,
+                     explode: bool = False):
+        params: Dict[str, Any] = {
+            "name": name,
+            "at": _point(at),
+            "scale": scale,
+            "rotation": float(rotation),
+            "explode": bool(explode),
+        }
+        if file:
+            params["file"] = os.path.abspath(os.path.expanduser(file))
+        if attribs:
+            params["attribs"] = attribs
+        result = self.call("engine.execute", {
+            "command": "insert",
+            "params": params,
+        })
+        handle = result.get("handle") if isinstance(result, dict) else None
+        if not handle:
+            raise CADCraftError("CADCraft 块插入没有返回句柄")
+        return CADCraftEntity(handle)
+
+    def block_count(self, space: str = "all", nested: bool = True) -> Dict[str, Any]:
+        result = self.call("engine.execute", {
+            "command": "countlist",
+            "params": {"space": space, "nested": bool(nested)},
+        })
+        return result if isinstance(result, dict) else {}
+
+    def set_block_attributes(self, handle: str,
+                             values: Dict[str, str]) -> Dict[str, Any]:
+        result = self.call("engine.execute", {
+            "command": "attedit",
+            "params": {"handle": str(handle), "values": values},
+        })
+        return result if isinstance(result, dict) else {}
+
     def add_dimension(self, start_point, end_point, text_position=None,
                       textheight: float = 5, layer=None, color=None):
         p1 = _point(start_point)

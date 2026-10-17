@@ -52,6 +52,7 @@ macOS / Linux 检测到 CADCraft 时默认使用 `CADCRAFT` 后端；可用 `CAD
 | 画建筑平面：图层、构件画法、分步顺序、Prompt 模板 | `references/drafting-conventions.md` |
 | 直墙带洞口（门/窗）的坐标容易算错 | 先跑 `scripts/wall_plan.py` 生成调用序列 |
 | 要轴网、自动尺寸、楼梯，或一次导出 calls/.scr/DXF/SVG | `references/plan-render.md` + `scripts/plan_render.py` |
+| 要用 DWG/DWT 模板和标准块原生出 DWG | `references/native-dwg-template.md` + `scripts/plan_native.py` |
 | 想在 Mac 上先审方案、不打开 CAD | `scripts/plan_render.py --out-svg preview.svg` |
 | 图元多、嫌慢，想选批量脚本还是 DXF | `references/performance.md` |
 | 想要一份照抄就能跑通的两居室示例 | `assets/example-two-bedroom/`（`plan.json` + `runbook.md`） |
@@ -94,6 +95,17 @@ python3 scripts/cad_direct.py --cad-type CADCRAFT stats
 python3 scripts/cad_direct.py --cad-type CADCRAFT draw --calls calls.json
 python3 scripts/cad_direct.py --cad-type CADCRAFT shot --out check.png
 python3 scripts/cad_direct.py --cad-type CADCRAFT save --path /abs/out.dwg
+```
+
+正式模板出图优先使用原生 DWG，不生成 DXF：
+
+```bash
+python3 scripts/plan_native.py plan.json \
+    --template /abs/template.dwt \
+    --output /abs/work.dwg \
+    --door-block-ccw DOOR_900_CCW \
+    --door-block-cw DOOR_900_CW \
+    --window-block WINDOW_1200
 ```
 
 坐标一律 `[x, y]`（可带 z）；绘图命令返回实体句柄，改图先用 `entities` 拿 handle。

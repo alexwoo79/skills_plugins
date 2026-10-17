@@ -110,8 +110,33 @@ class FakeCADCraft:
                     }],
                 }}
             if command in ("properties.set", "layer.new", "dimoverride",
-                           "undo", "redo", "zoom", "new"):
+                           "undo", "redo", "zoom", "new", "erase",
+                           "dimstyle"):
                 return {"id": request.get("id"), "ok": True, "result": {}}
+            if command == "blocks.list":
+                return {"id": request.get("id"), "ok": True, "result": {
+                    "blocks": [{
+                        "name": "DOOR_900",
+                        "base": [0, 0],
+                        "entities": 2,
+                        "dynamic": False,
+                        "description": "test",
+                    }],
+                }}
+            if command == "block":
+                return {"id": request.get("id"), "ok": True, "result": {
+                    "block": args.get("name"),
+                    "insert": "200",
+                }}
+            if command == "insert":
+                return {"id": request.get("id"), "ok": True, "result": {
+                    "handle": "201",
+                }}
+            if command == "countlist":
+                return {"id": request.get("id"), "ok": True, "result": {
+                    "blocks": {"DOOR_900": 2},
+                    "total": 2,
+                }}
             self._handle += 1
             return {"id": request.get("id"), "ok": True,
                     "result": {"handles": ["%X" % self._handle]}}
@@ -207,6 +232,22 @@ class CADCraftDriverTests(unittest.TestCase):
     def test_screenshot_decodes_png(self) -> None:
         data = self.controller.screenshot()
         self.assertTrue(data.startswith(b"\x89PNG"))
+
+    def test_native_block_methods(self) -> None:
+        self.assertEqual(self.controller.list_blocks()[0]["name"], "DOOR_900")
+        created = self.controller.create_block(
+            "DOOR_900", [0, 0], ["100", "101"], keep="delete")
+        self.assertEqual(created["block"], "DOOR_900")
+        entity = self.controller.insert_block(
+            "DOOR_900", [1000, 200], scale=0.9, rotation=90)
+        self.assertEqual(entity.Handle, "201")
+        self.assertEqual(self.controller.block_count()["total"], 2)
+        insert_params = next(
+            params
+            for method, params in self.server.requests
+            if method == "engine.execute"
+            and params.get("command") == "insert")
+        self.assertNotIn("file", insert_params["params"])
 
     def test_cli_routes_to_cadcraft(self) -> None:
         buffer = io.StringIO()
