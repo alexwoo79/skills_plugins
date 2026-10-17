@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """cad_direct — 直接用程序调用 CAD 的命令行入口。
 
-驱动层是内联在 skill 里的 `vendor/cad_core.py`（同样的 COM 层：图层/模型空间缓存、
-run_script 批量脚本与 USERS1 哨兵确认、忙碌重试、撤销组）。
+Windows 驱动层是内联在 skill 里的 `vendor/cad_core.py`（COM：图层/模型空间缓存、
+run_script 批量脚本与 USERS1 哨兵确认、忙碌重试、撤销组）。macOS 驱动层是
+`scripts/cadcraft_direct.py`，通过 CADCraft 的 127.0.0.1 JSON 控制端口工作。
 
-必须在装了 CAD 的 Windows 上运行（COM 只能同机调用）；远程时用
-`ssh winbox python C:\\path\\cad_direct.py ...`。
+COM 只能同机调用；远程时用 `ssh winbox python C:\\path\\cad_direct.py ...`。
+macOS 上需要先以 `--control <port>` 启动 CADCraft。
 
 约定：所有子命令都往 stdout 打**一个 JSON 对象**，日志走 stderr，退出码
 0=成功 / 1=CAD 侧失败 / 2=参数或规格错误。脚本里的坐标单位由图纸决定（建筑图用 mm）。
@@ -17,6 +18,7 @@ run_script 批量脚本与 USERS1 哨兵确认、忙碌重试、撤销组）。
   cad_direct.py script --file plan.scr            # 整批落图（推荐）
   cad_direct.py shot --out check.png              # 截图交给 Codex 看
   cad_direct.py save --path D:\\out\\plan.dwg
+  cad_direct.py --cad-type CADCRAFT draw --calls calls.json   # macOS
 """
 
 from __future__ import annotations
@@ -30,12 +32,21 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "vendor"))
 
 try:
-    from cad_core import CADController, config  # noqa: E402
-    _CORE_ERROR = None
-except ImportError as exc:  # 没装 pywin32（非 Windows）时给出干净的 JSON 报错
-    CADController = None
-    config = {"cad": {}, "output": {}}
-    _CORE_ERROR = exc
+    from cadcraft_direct import CADCraftController  # noqa: E402
+except ImportError:
+    CADCraftController = None
+
+CADController = None
+_CORE_ERROR = None
+config = {
+    "cad": {
+        "type": os.environ.get("CAD_TYPE", ""),
+        "cadcraft_port": int(os.environ.get("CADCRAFT_CONTROL_PORT", "43210")),
+    },
+    "output": {
+        "directory": os.environ.get("CAD_OUTPUT_DIR", "./cad_output"),
+    },
+}
 
 EXIT_OK = 0
 EXIT_CAD_FAILURE = 1
@@ -80,8 +91,63 @@ def _has_cad() -> bool:
     return True
 
 
+def _default_cad_type() -> str:
+    """Windows 默认 COM；macOS 装了 CADCraft 时默认走它的控制端口。"""
+    explicit = os.environ.get("CAD_TYPE")
+    if explicit:
+        return explicit.upper()
+    try:
+        import win32com.client  # noqa: F401
+        import pythoncom  # noqa: F401
+        return "AUTOCAD"
+    except ImportError:
+        pass
+    if sys.platform == "darwin" and os.path.exists("/Applications/CADCraft.app"):
+        return "CADCRAFT"
+    return "AUTOCAD"
+
+
+def _load_core():
+    """只在实际选择 Windows COM 后端时导入 cad_core。"""
+    global CADController, _CORE_ERROR
+    if CADController is not None:
+        return CADController
+    previous = logging.root.manager.disable
+    logging.disable(logging.CRITICAL)
+    try:
+        from cad_core import CADController as controller, config as core_config
+    except ImportError as exc:
+        _CORE_ERROR = exc
+        return None
+    else:
+        CADController = controller
+        core_config["cad"]["type"] = config["cad"]["type"]
+        core_config["output"]["directory"] = config["output"]["directory"]
+    finally:
+        logging.disable(previous)
+    return CADController
+
+
 def connect(controller: CADController | None = None) -> CADController:
     """连接已运行的 CAD；没有实例时拉起一个"""
+    cad_type = config.get("cad", {}).get("type") or _default_cad_type()
+    config["cad"]["type"] = cad_type
+    if cad_type.lower() == "cadcraft":
+        if CADCraftController is None:
+            raise RuntimeError("CADCraft 驱动未安装/不可导入")
+        port = int(config["cad"].get("cadcraft_port", 43210))
+        cadcraft = CADCraftController(port=port)
+        if cadcraft.is_running():
+            return cadcraft
+        if not cadcraft.start_cad():
+            raise RuntimeError(
+                "无法连接 CADCraft：请先运行 "
+                "`/Applications/CADCraft.app/Contents/MacOS/CADCraft --control %d`，"
+                "或用 `--cadcraft-port` 指定控制端口" % port)
+        return cadcraft
+
+    if _load_core() is None:
+        raise RuntimeError("缺少 pywin32 或 CAD COM 驱动不可用")
     controller = controller or CADController()
     if controller.is_running():
         return controller
@@ -387,10 +453,15 @@ def _edit(operation, args, new_entity: bool = False, multiple: bool = False) -> 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="cad_direct.py",
-                                     description="直接用程序调用 CAD（Windows COM）")
-    parser.add_argument("--cad-type", choices=["AUTOCAD", "GCAD", "GSTARCAD", "ZWCAD"],
-                        help="覆盖 CAD 类型（默认读 CAD_TYPE 环境变量，再退回 AUTOCAD）")
+                                     description="直接用程序调用 CAD（Windows COM / macOS CADCraft）")
+    parser.add_argument("--cad-type",
+                        choices=["AUTOCAD", "GCAD", "GSTARCAD", "ZWCAD", "CADCRAFT"],
+                        default=_default_cad_type(),
+                        help="CAD 类型（默认读 CAD_TYPE；macOS 装了 CADCraft 时默认 CADCRAFT）")
     parser.add_argument("--output-dir", help="脚本落盘目录（默认读 CAD_OUTPUT_DIR，再退回 ./cad_output）")
+    parser.add_argument("--cadcraft-port", type=int,
+                        default=int(os.environ.get("CADCRAFT_CONTROL_PORT", "43210")),
+                        help="CADCraft 本机控制端口（默认 43210）")
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("layers", help="列出图层").set_defaults(func=cmd_layers)
@@ -501,11 +572,14 @@ def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     if args.cad_type:
         config["cad"]["type"] = args.cad_type
+    if getattr(args, "cadcraft_port", None):
+        config["cad"]["cadcraft_port"] = args.cadcraft_port
     if args.output_dir:
         config["output"]["directory"] = args.output_dir
 
     dry_run_only = args.command == "draw" and getattr(args, "dry_run", False)
-    if not _has_cad() and not dry_run_only:
+    is_cadcraft = config.get("cad", {}).get("type", "").lower() == "cadcraft"
+    if not is_cadcraft and not _has_cad() and not dry_run_only:
         return _fail("缺少 pywin32：请在装了 CAD 的 Windows 上执行 pip install pywin32 pillow"
                      + (f"（驱动层导入失败: {_CORE_ERROR}）" if _CORE_ERROR else ""))
     try:

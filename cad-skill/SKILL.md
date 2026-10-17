@@ -19,13 +19,15 @@ CAD 只提供基础图元（线/圆/弧/多段线/矩形/文字/填充/标注）
 
 ## 运行条件
 
-- Windows，CAD 与 Codex **同机、同一交互式桌面会话**（COM 不能跨机）。
-- 已安装并激活 AutoCAD / 浩辰（GstarCAD、GCAD）/ 中望（ZWCAD）。
-- Python 3.10+，`pip install pywin32 Pillow`。
+- **Windows COM**：CAD 与 Codex 同机、同一交互式桌面会话；已安装并激活
+  AutoCAD / 浩辰（GstarCAD、GCAD）/ 中望（ZWCAD）；`pip install pywin32 Pillow`。
+- **macOS CADCraft**：安装 CADCraft 0.7+，用 `--control <port>` 启动；
+  `cad_direct.py --cad-type CADCRAFT` 通过本机 JSON 控制端口绘图，不需要 pywin32。
+- Python 3.10+；截图另需 Pillow（CADCraft 用自身渲染，不依赖 Pillow）。
 - 环境、启动与排障见 `references/setup-windows.md`。
 
-Codex 在 macOS / Linux 上时**不能**直接画图：可以用 `plan_render.py` 产出 DXF / SVG / `.scr`，
-或交付布局方案与坐标表，但不能描述成“已经画好”。
+macOS 装了 CADCraft 时可以直接画图；Linux 仍只能用 `plan_render.py` 产出 DXF / SVG / `.scr`，
+或交付布局方案与坐标表，不能描述成“已经画好”。
 
 ## 铁律
 
@@ -76,7 +78,16 @@ cad_direct.py new / zoom / send / undo / redo
 cad_direct.py erase / move / copy / offset / mirror / rotate / scale
 ```
 
-全局参数：`--cad-type AUTOCAD|GCAD|GSTARCAD|ZWCAD`、`--output-dir <目录>`。
+全局参数：`--cad-type AUTOCAD|GCAD|GSTARCAD|ZWCAD|CADCRAFT`、`--output-dir <目录>`；
+CADCraft 另用 `--cadcraft-port` 指定控制端口。
+
+macOS + CADCraft：
+
+```bash
+/Applications/CADCraft.app/Contents/MacOS/CADCraft --control 43210
+python3 scripts/cad_direct.py --cad-type CADCRAFT draw --calls calls.json
+python3 scripts/cad_direct.py --cad-type CADCRAFT shot --out check.png
+```
 
 坐标一律 `[x, y]`（可带 z）；绘图命令返回实体句柄，改图先用 `entities` 拿 handle。
 

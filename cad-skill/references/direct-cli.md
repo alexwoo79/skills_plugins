@@ -1,16 +1,18 @@
 # 命令行直连 CAD（`scripts/cad_direct.py`）
 
-驱动层内联在 `vendor/cad_core.py`（图层/模型空间缓存、`run_script` 批量脚本与 `USERS1`
-哨兵确认、忙碌重试、撤销组），CLI 只是它的命令行入口。依赖只有 **pywin32**，
-截图另需 Pillow。
+Windows 驱动层内联在 `vendor/cad_core.py`（图层/模型空间缓存、`run_script` 批量脚本与
+`USERS1` 哨兵确认、忙碌重试、撤销组），依赖 **pywin32**，截图另需 Pillow。
+macOS 使用 `scripts/cadcraft_direct.py`，通过 CADCraft 的 127.0.0.1 控制端口收发
+行分隔 JSON；不需要 pywin32/AppleScript，也不模拟鼠标点击。
 
 ## 前提
 
-- 在**装了 CAD 的 Windows** 上运行（COM 只能在同机同会话里用）。
-- Python 3.10+，`pip install pywin32 Pillow`。
-- CAD（AutoCAD / 浩辰 / 中望）已安装；没运行时会自动拉起，首次等待约 20 秒。
-- CAD 类型用 `--cad-type` 或环境变量 `CAD_TYPE` 指定（默认 `AUTOCAD`，
-  可选 `GCAD` / `GSTARCAD` / `ZWCAD`）。
+- **Windows COM**：装了 CAD 的 Windows；`pip install pywin32 Pillow`；CAD
+  （AutoCAD / 浩辰 / 中望）已安装，没运行时会自动拉起。
+- **macOS CADCraft**：安装 CADCraft 0.7+；启动时带 `--control <port>`，例如
+  `/Applications/CADCraft.app/Contents/MacOS/CADCraft --control 43210`。
+- CAD 类型用 `--cad-type` 或环境变量 `CAD_TYPE` 指定；Windows 默认 `AUTOCAD`，
+  macOS 装了 CADCraft 时默认 `CADCRAFT`。
 - 描图脚本额外要 `opencv-python-headless` 与 `ezdxf`；它不碰 CAD，可以放在另一侧跑。
 
 ## 契约
@@ -36,7 +38,8 @@
 | `undo --times N` / `redo --times N` | 撤销 / 重做 | `results[]` |
 | `erase` / `move` / `copy` / `offset` / `mirror` / `rotate` / `scale` | 按句柄编辑 | `handle` 或 `handles[]` |
 
-全局参数：`--cad-type`、`--output-dir`（`.scr` 落盘目录，默认 `./cad_output`）。
+全局参数：`--cad-type`、`--output-dir`（`.scr` 落盘目录，默认 `./cad_output`）、
+`--cadcraft-port`（CADCraft 控制端口，默认 43210）。
 
 `draw` 默认遇到第一个失败就停，避免画出半套图；`--keep-going` 可继续后面的图元。
 
@@ -76,8 +79,32 @@ python3 scripts/cad_direct.py save --path D:\out\plan.dwg
 
 直连 COM 不适合跨机：Windows 的 COM 实例按会话隔离，SSH / 服务会话通常连不到你桌面里的 CAD。
 
-Codex 不在 Windows 上时：
+没有可用 CAD 或需要跨机时：
 
 1. 在 Codex 这一侧跑 `plan_render.py` 生成 `.dxf`、`.svg`、`.scr`；
 2. 把 DXF 拷到 Windows 打开另存 DWG，或在 CAD 里执行 `.scr`；
 3. 需要边画边看时，把 Codex 直接装在 Windows 上，与 CAD 同一会话运行。
+
+macOS 上装了 CADCraft 时可直接用下一节的本地控制端口，不需要跨到 Windows。
+
+## macOS CADCraft
+
+CADCraft 0.7 自带本地 JSON 控制服务。控制通道只在启动参数带 `--control` 时开启；
+正常打开应用不会监听端口。
+
+```bash
+# 终端启动（保持窗口开着）
+/Applications/CADCraft.app/Contents/MacOS/CADCraft --control 43210
+
+# skill 直接落图
+python3 scripts/cad_direct.py --cad-type CADCRAFT draw --calls calls.json
+python3 scripts/cad_direct.py --cad-type CADCRAFT shot --out check.png
+python3 scripts/cad_direct.py --cad-type CADCRAFT save --path /tmp/plan.dxf
+```
+
+驱动使用 `drawing.inspect` 查实体/图层/范围，`engine.execute` 执行图元与编辑命令，
+`ui.render` 生成 PNG 预览，`cmdline.script` 运行 `.scr`。不会在命令结束时自动退出
+CADCraft；只有显式调用控制服务的 `app.quit` 才会关闭。
+
+限制：CADCraft 0.7 是 2D 绘图；`offset` 需要侧点，驱动会按实体首段法向选一侧；
+DWG 保存建议在 CADCraft 里再确认一次版本兼容性。

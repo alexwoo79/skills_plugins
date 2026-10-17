@@ -136,5 +136,6 @@ COM 只在 Windows 上可用。macOS / Linux 上仍可运行：
 - `scripts/image_to_calls.py`、`image_to_walls.py`、`image_to_vector.py`：矢量化；
 - `scripts/wall_plan.py`：几何换算。
 
-但不能连 CAD。此时交付**布局方案 + 坐标表 + DXF/SVG**，由 Windows 侧打开或执行脚本落图；
-不要描述成“已经画好”。
+macOS 如果安装了 CADCraft，可以用 `scripts/cad_direct.py --cad-type CADCRAFT`
+通过它的 `--control` 本地端口直接绘图；Linux 仍不能连 CAD。没有可用 CAD 时交付
+**布局方案 + 坐标表 + DXF/SVG**，由 Windows 侧打开或执行脚本落图；不要描述成“已经画好”。

@@ -236,7 +236,8 @@ class CliSubprocessTests(unittest.TestCase):
         """没装 pywin32 时应该是 JSON 报错 + 退出码 1，而不是抛栈。"""
         env = dict(os.environ)
         env.pop("PYTHONPATH", None)
-        result = subprocess.run([sys.executable, os.path.join(SCRIPTS, "cad_direct.py"), "layers"],
+        result = subprocess.run([sys.executable, os.path.join(SCRIPTS, "cad_direct.py"),
+                                 "--cad-type", "AUTOCAD", "layers"],
                                 capture_output=True, text=True, env=env, timeout=60)
         self.assertEqual(result.returncode, 1, result.stderr)
         payload = json.loads(result.stdout)
