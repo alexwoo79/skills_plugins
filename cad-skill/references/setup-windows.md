@@ -88,6 +88,33 @@ python scripts\cad_direct.py layers
 python scripts\cad_direct.py script --file plan.scr
 ```
 
+<a id="ocr"></a>
+## OCR（可选，仅 `--ocr-text` 时需要）
+
+Windows 没有 macOS 的 Vision，OCR 走 **Tesseract + pytesseract**。不装也能正常出几何，
+只是不能把文字变成 `A-TEXT`；显式加了 `--ocr-text` 却没装时，会返回安装提示而不是静默跳过。
+
+```powershell
+# 1) 安装 Tesseract（含中文语言包）
+winget install --id UB-Mannheim.TesseractOCR -e
+
+# 2) Python 适配层
+py -m pip install pytesseract pillow
+
+# 3) 指定可执行文件（没加 PATH 时）
+setx TESSERACT_CMD "C:\Program Files\Tesseract-OCR\tesseract.exe"
+```
+
+检查：
+
+```powershell
+tesseract --list-langs        # 应包含 eng 与 chi_sim
+python scripts\sketch_trace.py --check-ocr
+```
+
+`--check-ocr` 输出 `{"ready": true, "backend": "tesseract"}` 即就绪。语言包缺失时，
+把 `chi_sim.traineddata` 放到 `C:\Program Files\Tesseract-OCR\tessdata\`。
+
 ## 排障
 
 | 现象 | 处理 |

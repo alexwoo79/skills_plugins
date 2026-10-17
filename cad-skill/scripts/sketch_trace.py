@@ -71,7 +71,7 @@ def _vision_binary() -> Optional[str]:
         return None
 
 
-def ocr_texts(path: str, languages: Sequence[str] = ("en-US", "zh-Hans"),
+def ocr_texts(path: str, languages: Sequence[str] = ("zh-Hans", "en-US"),
               timeout: float = 60.0) -> Tuple[List[Dict[str, Any]], Optional[str]]:
     """返回 [{text, confidence, x, y, w, h}]（归一化，原点左下）与后端名。"""
     binary = _vision_binary()
@@ -88,11 +88,13 @@ def ocr_texts(path: str, languages: Sequence[str] = ("en-US", "zh-Hans"),
         from PIL import Image  # type: ignore
     except ImportError:
         return [], None
+    if not _configure_tesseract(pytesseract):
+        return [], None
     try:
         data = pytesseract.image_to_data(Image.open(path), output_type=pytesseract.Output.DICT,
                                          lang="+".join(lang.split("-")[0] for lang in languages))
     except Exception:
-        return [], "tesseract"
+        return [], None
     width, height = Image.open(path).size
     found = []
     for index, text in enumerate(data.get("text", [])):
@@ -104,6 +106,74 @@ def ocr_texts(path: str, languages: Sequence[str] = ("en-US", "zh-Hans"),
         found.append({"text": text, "confidence": data["conf"][index] / 100.0,
                       "x": x, "y": 1.0 - y - h, "w": w, "h": h})
     return found, "tesseract"
+
+
+def _configure_tesseract(pytesseract) -> bool:
+    """Windows 上 pytesseract 不会自动找 tesseract.exe：允许环境变量或默认安装路径。"""
+    candidates = [
+        os.environ.get("TESSERACT_CMD"),
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+        shutil.which("tesseract"),
+    ]
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate):
+            pytesseract.pytesseract.tesseract_cmd = candidate
+            break
+    try:
+        pytesseract.get_tesseract_version()
+        return True
+    except Exception:
+        return False
+
+
+def ocr_install_hint(platform: Optional[str] = None) -> Dict[str, Any]:
+    """按平台返回 OCR 依赖的安装指引（不执行任何安装）。"""
+    name = (platform or sys.platform).lower()
+    if name.startswith("win"):
+        return {
+            "platform": "windows",
+            "backend": "tesseract + pytesseract",
+            "commands": [
+                "winget install --id UB-Mannheim.TesseractOCR -e",
+                "py -m pip install pytesseract pillow",
+                "确认 tessdata 里有 eng.traineddata 与 chi_sim.traineddata",
+                r"set TESSERACT_CMD=C:\Program Files\Tesseract-OCR\tesseract.exe",
+            ],
+            "doc": "references/setup-windows.md#ocr",
+        }
+    if name == "darwin":
+        return {
+            "platform": "macos",
+            "backend": "Vision（自带）或 tesseract",
+            "commands": [
+                "xcode-select --install   # 提供 swiftc，用于 Vision OCR",
+                "brew install tesseract tesseract-lang && pip3 install pytesseract pillow",
+            ],
+            "doc": "references/image-vectorize.md",
+        }
+    return {
+        "platform": "linux",
+        "backend": "tesseract + pytesseract",
+        "commands": [
+            "sudo apt install tesseract-ocr tesseract-ocr-chi-sim",
+            "python3 -m pip install pytesseract pillow",
+        ],
+        "doc": "references/image-vectorize.md",
+    }
+
+
+def ocr_status() -> Dict[str, Any]:
+    binary = _vision_binary()
+    if binary:
+        return {"ready": True, "backend": "vision"}
+    try:
+        import pytesseract  # type: ignore
+    except ImportError:
+        return {"ready": False, "backend": None, "hint": ocr_install_hint()}
+    if not _configure_tesseract(pytesseract):
+        return {"ready": False, "backend": None, "hint": ocr_install_hint()}
+    return {"ready": True, "backend": "tesseract"}
 
 
 # ---------------------------------------------------------------- 图像与描线
@@ -246,7 +316,9 @@ def render_overlay(image_path: str, thin_paths, solid_paths, texts,
         cv2.polylines(image, [np.array(polyline, np.int32)], True, (0, 0, 255), 1)
     for text in texts:
         x, y, w, h = int(text["x"]), int(text["y"]), int(text["w"]), int(text["h"])
-        cv2.rectangle(image, (x, y), (x + w, y + h), (255, 0, 0), 1)
+        bw = int(text.get("bbox_w", w))
+        bh = int(text.get("bbox_h", h))
+        cv2.rectangle(image, (x, y), (x + bw, y + bh), (255, 0, 0), 1)
     cv2.imwrite(out_path, image)
 
 
@@ -276,12 +348,19 @@ def write_dxf(path: str, thin_paths: List[List[Tuple[float, float]]],
         model.add_lwpolyline([point(x, y) for x, y in polyline], close=True,
                              dxfattribs={"layer": "A-SOLID"})
     for text in texts:
-        insert = point(text["x"], text["y"] + text["h"] * 0.8)
+        rotation = float(text.get("rotation", 0.0))
+        if rotation:
+            insert_px = (text["x"] + text["w"] / 2,
+                         text["y"] + text.get("bbox_h", text["h"]))
+        else:
+            insert_px = (text["x"], text["y"] + text["h"])
+        insert = point(*insert_px)
         entity = model.add_text(text["text"], height=max(text["h"] / ppm, 0.5),
-                                dxfattribs={"layer": "A-TEXT"})
+                                dxfattribs={"layer": "A-TEXT", "rotation": rotation})
         entity.set_placement(insert)
     doc.saveas(path)
-    return {"path": path, "entities": len(thin_paths) + len(solid_paths) + len(texts),
+    return {"path": path,
+            "entities": len(thin_paths) + len(solid_paths) + len(texts),
             "sketch": len(thin_paths), "solid": len(solid_paths), "texts": len(texts)}
 
 
@@ -290,7 +369,8 @@ def write_dxf(path: str, thin_paths: List[List[Tuple[float, float]]],
 def trace(path: str, max_side: int = 2048, solid_px: float = 16.0,
           simplify: float = 1.2, ocr: bool = False,
           keep_text_strokes: bool = False,
-          languages: Sequence[str] = ("en-US", "zh-Hans"),
+          solid_contours: bool = False,
+          languages: Sequence[str] = ("zh-Hans", "en-US"),
           px_per_mm: Optional[float] = None,
           out_dxf: Optional[str] = None,
           overlay: Optional[str] = None) -> Dict[str, Any]:
@@ -315,6 +395,12 @@ def trace(path: str, max_side: int = 2048, solid_px: float = 16.0,
     backend = None
     if ocr:
         found, backend = ocr_texts(path, languages)
+        if backend is None:
+            hint = ocr_install_hint()
+            raise RuntimeError(
+                "OCR 不可用：当前平台没有 Vision/Tesseract。安装：%s；"
+                "或去掉 --ocr-text 只输出几何（加 --keep-text-strokes 可保留文字笔画）。"
+                "详见 %s" % ("；".join(hint["commands"]), hint["doc"]))
         found = [item for item in found if item.get("confidence", 1.0) >= 0.3]
     stats["ocr_backend"] = backend
     stats["ocr_ms"] = _ms(ocr_started)
@@ -328,18 +414,28 @@ def trace(path: str, max_side: int = 2048, solid_px: float = 16.0,
         w, h = item["w"] * width, item["h"] * height
         if w < 3 or h < 3:
             continue
+        # 旋转 90° 的文字：bbox 长边是文字长度，短边才是字号
+        rotation = 90.0 if h > 2.5 * w else 0.0
         texts.append({"text": item["text"], "confidence": item["confidence"],
-                      "x": x, "y": y, "w": w, "h": h})
+                      "x": x, "y": y, "w": w, "h": min(w, h),
+                      "bbox_w": w, "bbox_h": h, "rotation": rotation})
         boxes.append((int(x), int(y), int(w), int(h)))
     if ocr and not keep_text_strokes:
         remove_regions(ink, boxes)
     stats["text_strokes_removed"] = bool(ocr and not keep_text_strokes)
 
     split_started = _timed()
-    thin_mask, solid_mask = split_strokes(ink, solid_px)
-    skeleton = thin(thin_mask, 40) if thin_mask.any() else thin_mask
-    thin_paths = skeleton_paths(skeleton, simplify)
-    solid_paths = solid_polylines(solid_mask, simplify)
+    if solid_contours:
+        # 显式要求保留实心形状时：粗区走轮廓，细线走骨架
+        thin_mask, solid_mask = split_strokes(ink, solid_px)
+        skeleton = thin(thin_mask, 40) if thin_mask.any() else thin_mask
+        thin_paths = skeleton_paths(skeleton, simplify)
+        solid_paths = solid_polylines(solid_mask, simplify)
+    else:
+        # 默认：所有墨迹都走 1px 骨架，一条笔画只输出一条 PLINE
+        skeleton = thin(ink, 40) if ink.any() else ink
+        thin_paths = skeleton_paths(skeleton, simplify)
+        solid_paths = []
     stats["trace_ms"] = _ms(split_started)
     stats["sketch"] = len(thin_paths)
     stats["solid"] = len(solid_paths)
@@ -356,7 +452,8 @@ def trace(path: str, max_side: int = 2048, solid_px: float = 16.0,
         stats["dxf"] = out_dxf
     stats["ms"] = _ms(started)
     stats["notes"] = [
-        "细线走骨架中心线，实心区域走轮廓；曲线以多段线近似",
+        ("所有墨迹走骨架，一条笔画输出一条多段线；曲线以折线近似"
+         if not solid_contours else "细线走骨架、粗区域走轮廓"),
         "OCR 文本在 A-TEXT；默认不开启，开启后默认移除原文字笔画",
     ]
     return stats
@@ -364,29 +461,41 @@ def trace(path: str, max_side: int = 2048, solid_px: float = 16.0,
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="混合描线：骨架中心线 + 实心轮廓 + 可选 OCR")
-    parser.add_argument("image")
+    parser.add_argument("image", nargs="?")
     parser.add_argument("--out-dxf")
     parser.add_argument("--preview", help="叠加预览 PNG")
     parser.add_argument("--max-side", type=int, default=2048, help="工作画布长边（0=原图）")
     parser.add_argument("--solid-px", type=float, default=16.0,
-                        help="笔画厚度达到该值（像素）判为实心区域")
+                        help="仅在 --solid-contours 时生效：厚度达到该值判为实心区域")
+    parser.add_argument("--solid-contours", action="store_true",
+                        help="粗区域走轮廓（默认所有墨迹走单线骨架）")
     parser.add_argument("--simplify", type=float, default=1.2, help="多段线简化容差（像素）")
     parser.add_argument("--px-per-mm", type=float, help="给定时输出毫米；否则输出像素")
     parser.add_argument("--ocr-text", action="store_true", help="OCR 文字写成 A-TEXT")
     parser.add_argument("--keep-text-strokes", action="store_true",
                         help="OCR 后仍保留原文字笔画")
-    parser.add_argument("--ocr-langs", default="en-US,zh-Hans")
+    parser.add_argument("--ocr-langs", default="zh-Hans,en-US")
+    parser.add_argument("--check-ocr", action="store_true",
+                        help="只检查 OCR 后端是否可用（不转换）")
     parser.add_argument("--pretty", action="store_true")
     args = parser.parse_args(argv)
+    if args.check_ocr:
+        status = ocr_status()
+        print(json.dumps(status, ensure_ascii=False, indent=2 if args.pretty else None))
+        return 0 if status.get("ready") else 1
+    if not args.image:
+        parser.error("需要图像路径（或用 --check-ocr 只检查 OCR）")
     try:
         stats = trace(args.image, max_side=args.max_side, solid_px=args.solid_px,
                       simplify=args.simplify, ocr=args.ocr_text,
                       keep_text_strokes=args.keep_text_strokes,
+                      solid_contours=args.solid_contours,
                       languages=tuple(args.ocr_langs.split(",")),
                       px_per_mm=args.px_per_mm, out_dxf=args.out_dxf,
                       overlay=args.preview)
     except RuntimeError as exc:
-        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+        print(json.dumps({"ok": False, "error": str(exc),
+                          "ocr_hint": ocr_install_hint()}, ensure_ascii=False))
         return 1
     print(json.dumps(stats, ensure_ascii=False, indent=2 if args.pretty else None))
     return 0

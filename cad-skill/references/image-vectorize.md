@@ -26,12 +26,14 @@
 `image_to_calls.py` 的默认出口是 `--tracer hybrid`，目标不是“抽墙”，而是**保真复刻线稿**：
 
 1. 长边归一化到 `--max-side`（默认 2048），自适应 Otsu；
-2. 按连通域最大笔画宽度分流：≥ `--solid-px`（默认 16px）的整块当实心区域，
-   沿外轮廓 + 孔输出闭合多段线（`A-SOLID`）；
-3. 其余细笔画细化成 1px 骨架，按端点/交点切图走线，再用 Douglas-Peucker
-   简化成多段线（`A-SKETCH`）；圆弧/曲线保留为折线；
+2. **所有墨迹细化成 1px 骨架**，按端点/交点切图走线，再用 Douglas-Peucker
+   简化成多段线（`A-SKETCH`）；一条笔画只输出一条 PLINE，圆弧/曲线保留为折线；
+3. 只有显式 `--solid-contours` 时，才按 `--solid-px` 把粗区域分流走外轮廓 + 孔
+   （`A-SOLID`）；默认不会把描边线轮廓化成双线；
 4. 可选 `--ocr-text`：识别文字写成 `TEXT`（`A-TEXT`），并默认移除原文字笔画；
-   `--keep-text-strokes` 可保留。macOS 用 Vision（中英），其他平台回退 Tesseract。
+   `--keep-text-strokes` 可保留。macOS 用 Vision，默认 `zh-Hans,en-US`（中文优先），
+   其他平台回退 Tesseract；Windows 需安装 Tesseract + pytesseract + `chi_sim` 语言包，
+   缺依赖时 `--ocr-text` 会带 `ocr_hint` 返回安装命令（见 `references/setup-windows.md#ocr`）。
 
 输出统计带分阶段计时：`ocr_ms` / `trace_ms` / `ms`，以及 `sketch` / `solid` / `texts`。
 没有标定时坐标是工作图像素（`$INSUNITS=0`）；给了 `--px-per-mm` 才是毫米。
@@ -41,8 +43,8 @@
 | 模式 | 实体 | 文本 | 耗时 |
 | --- | --- | --- | --- |
 | 参考服务（NASJI） | 401 多段线 | 7（英文） | 3608 ms |
-| 本项目 hybrid | 601 细线 + 85 实心轮廓 | 0 | 352 ms |
-| 本项目 hybrid + OCR | 300 + 85 + 10 文本 | 10（含 BATH） | 691 ms |
+| 本项目 hybrid（单线骨架） | 1075 条多段线 | 0 | 406 ms |
+| 本项目 hybrid + OCR | 764 线 + 11 文本 | 11（含 BATH） | 761 ms |
 
 ## 依赖
 

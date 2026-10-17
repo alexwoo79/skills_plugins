@@ -135,22 +135,24 @@ python3 scripts/wall_plan.py plan.json --pretty
 需要楼梯时加 `--stairs`：按等间距、等长、互相平行的短线簇识别直跑楼梯，并从墙配对里摘出去。
 只认正交直跑梯段；旋转梯、弧形梯、带平台断开的长梯仍要人工补。
 
-忠实模式（默认）用混合描线器：细笔画细化成骨架后走成多段线，实心区域沿真实轮廓 + 孔走线；
-曲线/圆弧以多段线近似。它不推断门窗，也不删除图里的元素。
+忠实模式（默认）用混合描线器：**所有墨迹细化成 1px 骨架，一条笔画输出一条多段线**；
+不会把墙身边框轮廓化成双线，曲线/圆弧以多段线近似。需要保留实心块外轮廓时，
+显式加 `--solid-contours`。它不推断门窗，也不删除图里的元素。
 
 ```bash
 # 忠实描线（默认）
 python3 scripts/image_to_calls.py plan.png --out-dxf plan.dxf
 
-# 需要可编辑文字时（macOS 用 Vision，中英；其他平台回退 Tesseract）
+# 需要可编辑文字时（macOS 用 Vision；Windows 需先装 Tesseract，见 setup-windows.md#ocr）
 python3 scripts/image_to_calls.py plan.png --ocr-text --out-dxf plan.dxf
 
 # 旧 Hough 线段模式（只输出 A-TRACE）
 python3 scripts/image_to_calls.py plan.png --tracer hough --out-dxf plan.dxf
 ```
 
-相关参数：`--max-side 2048`（工作画布长边）、`--solid-px 16`（实心区域厚度阈值）、
-`--simplify 1.2`（多段线简化）、`--keep-text-strokes`（OCR 后仍保留原笔画）。
+相关参数：`--max-side 2048`（工作画布长边）、`--simplify 1.2`（多段线简化）、
+`--solid-contours` + `--solid-px 16`（显式保留实心轮廓时用）、
+`--keep-text-strokes`（OCR 后仍保留原笔画）。
 结构化模式（`--mode walls`）下，`--out-dxf` 与 `--out-calls` 走同一个后端，图元一一对应。
 `image_to_walls.py` 默认保留全部线work；要裁剪/清理时显式加 `--inside-only --clean-trace`。
 依赖 `opencv-python-headless` 与 `ezdxf`；细节见 `references/image-vectorize.md`。

@@ -45,18 +45,28 @@ class HybridTracerTests(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def test_skeleton_and_solid_split(self) -> None:
+    def test_single_line_skeleton_by_default(self) -> None:
+        """默认所有墨迹走骨架：一条笔画一条多段线，不产生轮廓双线。"""
         dxf_path = os.path.join(self.tmp, "out.dxf")
-        stats = sketch_trace.trace(self.image, out_dxf=dxf_path, solid_px=16)
+        stats = sketch_trace.trace(self.image, out_dxf=dxf_path)
         self.assertGreaterEqual(stats["sketch"], 2, stats)
-        self.assertGreaterEqual(stats["solid"], 1, stats)
+        self.assertEqual(stats["solid"], 0, stats)
         self.assertIn("trace_ms", stats)
         self.assertIn("ms", stats)
         if ezdxf is not None:
             doc = ezdxf.readfile(dxf_path)
             layers = {entity.dxf.layer for entity in doc.modelspace()}
-            self.assertTrue({"A-SKETCH", "A-SOLID"}.issubset(layers))
+            self.assertEqual(layers, {"A-SKETCH"})
             self.assertEqual(doc.header.get("$INSUNITS"), 0)   # 未标定 → 像素
+
+    def test_solid_contours_are_opt_in(self) -> None:
+        stats = sketch_trace.trace(self.image, solid_contours=True, solid_px=16,
+                                   out_dxf=os.path.join(self.tmp, "solid.dxf"))
+        self.assertGreaterEqual(stats["solid"], 1, stats)
+        if ezdxf is not None:
+            layers = {entity.dxf.layer for entity in
+                      ezdxf.readfile(os.path.join(self.tmp, "solid.dxf")).modelspace()}
+            self.assertTrue({"A-SKETCH", "A-SOLID"}.issubset(layers))
 
     def test_max_side_caps_working_canvas(self) -> None:
         big = os.path.join(self.tmp, "big.png")
@@ -94,6 +104,27 @@ class HybridTracerTests(unittest.TestCase):
         self.assertAlmostEqual(stats["px_per_mm"], 0.1)
         doc = ezdxf.readfile(dxf_path)
         self.assertEqual(doc.header.get("$INSUNITS"), 4)
+
+    def test_windows_ocr_hint_lists_install_steps(self) -> None:
+        hint = sketch_trace.ocr_install_hint("win32")
+        joined = " ".join(hint["commands"])
+        self.assertEqual(hint["platform"], "windows")
+        self.assertIn("winget", joined)
+        self.assertIn("pytesseract", joined)
+        self.assertIn("chi_sim", joined)
+        self.assertIn("setup-windows.md#ocr", hint["doc"])
+
+    def test_ocr_requested_without_backend_raises_hint(self) -> None:
+        original = sketch_trace.ocr_texts
+        sketch_trace.ocr_texts = lambda *args, **kwargs: ([], None)
+        try:
+            with self.assertRaises(RuntimeError) as caught:
+                sketch_trace.trace(self.image, ocr=True)
+        finally:
+            sketch_trace.ocr_texts = original
+        message = str(caught.exception)
+        self.assertIn("OCR 不可用", message)
+        self.assertIn("安装", message)
 
 
 if __name__ == "__main__":

@@ -863,14 +863,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-side", type=int, default=2048,
                         help="hybrid 工作画布长边（默认 2048；0=原图）")
     parser.add_argument("--solid-px", type=float, default=16.0,
-                        help="hybrid：笔画厚度达到该值判为实心区域（像素）")
+                        help="hybrid + --solid-contours：厚度达到该值判为实心区域（像素）")
+    parser.add_argument("--solid-contours", action="store_true",
+                        help="hybrid：粗区域走轮廓（默认所有墨迹走单线骨架）")
     parser.add_argument("--simplify", type=float, default=1.2,
                         help="hybrid：多段线简化容差（像素）")
     parser.add_argument("--ocr-text", action="store_true",
                         help="hybrid：OCR 文字写成 A-TEXT（并移除原文字笔画）")
     parser.add_argument("--keep-text-strokes", action="store_true",
                         help="hybrid + OCR：保留原文字笔画")
-    parser.add_argument("--ocr-langs", default="en-US,zh-Hans",
+    parser.add_argument("--ocr-langs", default="zh-Hans,en-US",
                         help="hybrid OCR 语言（逗号分隔）")
     parser.add_argument("--px-per-mm", type=float, help="像素/毫米（标定方式一）")
     parser.add_argument("--calibrate", help='两个像素点 "x1,y1 x2,y2"（标定方式二）')
@@ -935,13 +937,21 @@ def main(argv=None) -> int:
             print()
             return EXIT_USAGE
         import sketch_trace
-        result = sketch_trace.trace(
-            args.image, max_side=args.max_side, solid_px=args.solid_px,
-            simplify=args.simplify, ocr=args.ocr_text,
-            keep_text_strokes=args.keep_text_strokes,
-            languages=tuple(args.ocr_langs.split(",")),
-            px_per_mm=scale if calibrated else None,
-            out_dxf=args.out_dxf, overlay=args.preview)
+        try:
+            result = sketch_trace.trace(
+                args.image, max_side=args.max_side, solid_px=args.solid_px,
+                simplify=args.simplify, ocr=args.ocr_text,
+                keep_text_strokes=args.keep_text_strokes,
+                solid_contours=args.solid_contours,
+                languages=tuple(args.ocr_langs.split(",")),
+                px_per_mm=scale if calibrated else None,
+                out_dxf=args.out_dxf, overlay=args.preview)
+        except RuntimeError as exc:
+            json.dump({"ok": False, "error": str(exc),
+                       "ocr_hint": sketch_trace.ocr_install_hint()},
+                      sys.stdout, ensure_ascii=False)
+            print()
+            return EXIT_FAILURE
         result.update({"mode": "lines", "tracer": "hybrid", "dxf_mode": "trace"})
         json.dump(result, sys.stdout, ensure_ascii=False,
                   indent=2 if args.pretty else None)
