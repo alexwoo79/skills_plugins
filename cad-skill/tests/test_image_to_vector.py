@@ -130,6 +130,7 @@ class ShapeTracingTests(unittest.TestCase):
         self.assertEqual(payload["polylines"], 5)
         self.assertEqual(payload["hatches"], 3)
         doc = ezdxf.readfile(dxf_path)
+        self.assertEqual(doc.header.get("$INSUNITS"), 4)       # px_per_mm 给了 → 毫米
         model = doc.modelspace()
         types = {}
         for entity in model:

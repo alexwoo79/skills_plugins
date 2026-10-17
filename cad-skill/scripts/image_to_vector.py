@@ -216,6 +216,7 @@ def write_dxf(path: str, outers, holes, scale: float, height: int, origin,
     from ezdxf.lldxf import const
 
     doc = ezdxf.new("R2010")
+    doc.header["$INSUNITS"] = 4 if scale != 1.0 else 0   # 毫米 / 无单位
     model = doc.modelspace()
     entities = {"polylines": 0, "hatches": 0}
 

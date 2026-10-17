@@ -600,6 +600,7 @@ def write_dxf(path: str, walls: List[Dict[str, Any]], thin: List[Dict[str, Any]]
                 to_mm(y, scale, True, height, origin[1]))
 
     doc = ezdxf.new("R2010")
+    doc.header["$INSUNITS"] = 4 if scale != 1.0 else 0   # 毫米 / 无单位
     model = doc.modelspace()
     counts = {"wall_rectangles": 0, "wall_centerlines": 0, "trace_lines": 0}
 
@@ -725,8 +726,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--room-wall-support", type=float, default=0.5,
                         help="房间边界的真墙支撑下限（默认 0.5）：低于它认为是闭运算"
                              "造出的假区域；窗洞大的图可下调")
-    parser.add_argument("--keep-outside-trace", dest="trace_inside_only", action="store_false",
-                        help="保留室外线work（默认只保留室内，尺寸线/指北针等不进 DXF）")
+    parser.add_argument("--inside-only", dest="trace_inside_only", action="store_true",
+                        help="只保留室内线work（默认保留全部：尺寸线/图签/指北针也照描）")
+    parser.add_argument("--keep-outside-trace", dest="trace_inside_only",
+                        action="store_false", default=argparse.SUPPRESS,
+                        help=argparse.SUPPRESS)
     parser.add_argument("--trace-min-mm", type=float, default=250.0,
                         help="线work 最短保留长度（毫米，默认 250）：房间名/尺寸文字的"
                              "笔画与填充记号都在这个量级；要保留门开启弧可调到 120")
@@ -736,8 +740,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="密度统计半径（毫米，默认 150）")
     parser.add_argument("--trace-dense-count", type=int, default=12,
                         help="半径内邻居数达到该值就按纹理删除（默认 12）")
+    parser.add_argument("--clean-trace", dest="trace_clean", action="store_true",
+                        help="清理短碎线与密排纹理（默认不清理，优先保真）")
     parser.add_argument("--no-trace-clean", dest="trace_clean", action="store_false",
-                        help="不做线work 清理（保留全部碎线）")
+                        default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     parser.add_argument("--component-min-area", type=float, default=0.0,
                         help="丢弃面积小于该值（像素²）的连通域，默认 0=不过滤；"
                              "指北针/尺寸箭头/文字笔画通常 <1000，可设 600")

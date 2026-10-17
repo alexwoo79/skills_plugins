@@ -1,16 +1,14 @@
 """CAD 驱动核心（内联版）：直接用 COM 操作 Windows 上的 AutoCAD / 浩辰 / 中望。
 
-来源：仓库 `cad-mcp/src/cad_controller.py` 的本地副本（含图层缓存、模型空间缓存、
-run_script 批量脚本与哨兵确认，见 `cad-mcp/PATCHES.md`）。本文件是**内联到 skill 里
-的版本**，因此做了三处裁剪，除此之外与源文件保持一致：
+COM 驱动层：图层/模型空间缓存、run_script 批量脚本与 USERS1 哨兵、忙碌重试、撤销组。
+为适配单进程 CLI 做了裁剪：
 
-1. 去掉 COMExecutor 常驻 COM 线程——CLI 是单线程进程，COM 在调用线程上初始化；
-2. 去掉对 cad-mcp 的 config.py / config.json 依赖，改为内联配置 + 环境变量覆盖；
-3. 去掉 MCP 相关注释里的服务端措辞。
-4. 连上已有 CAD 实例后不再固定等 2 秒（只有"新拉起 CAD"才等）：CLI 每次调用
-   都是新进程，2 秒会压在每条命令上；每个 COM 调用本身带忙碌重试，足够覆盖。
+1. COM 在调用线程上初始化，不常驻 COM 线程；
+2. 配置内联，可用环境变量覆盖；
+3. 连上已有 CAD 实例后不再固定等 2 秒（只有"新拉起 CAD"才等），
+   每个 COM 调用本身带忙碌重试，足够覆盖。
 
-它只依赖 pywin32（截图另需 Pillow），不依赖 mcp / pydantic。
+它只依赖 pywin32（截图另需 Pillow）。来源与许可见 THIRD_PARTY_NOTICES.md。
 """
 
 import io
@@ -410,7 +408,7 @@ class CADController:
 
         try:
             # 相对路径必须先转为绝对路径：SaveAs在CAD进程内解析路径，
-            # 其工作目录与MCP服务器的工作目录通常不同（实测相对文件会存到别处）
+            # 其工作目录与调用方的工作目录通常不同（实测相对文件会存到别处）
             file_path = os.path.abspath(file_path)
 
             # 确保目录存在（abspath后必有dirname；目录可能尚未创建）
@@ -1350,7 +1348,7 @@ class CADController:
         if self.app is None:
             return False
         # 相对路径必须先转为绝对路径：Documents.Open在CAD进程内解析路径，
-        # 其工作目录与MCP服务器的工作目录通常不同（与save_drawing同理）
+        # 其工作目录与调用方的工作目录通常不同（与save_drawing同理）
         file_path = os.path.abspath(file_path)
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"文件不存在: {file_path}")

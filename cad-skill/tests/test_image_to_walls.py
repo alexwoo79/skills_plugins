@@ -219,6 +219,7 @@ class WallExtractionTests(unittest.TestCase):
         self.assertNotIn("room_areas_m2", payload)
         if ezdxf is not None:
             doc = ezdxf.readfile(dxf_path)
+            self.assertEqual(doc.header.get("$INSUNITS"), 4)   # 毫米
             layers = {entity.dxf.layer for entity in doc.modelspace()}
             self.assertNotIn("A-ROOM", layers)
 
@@ -253,15 +254,25 @@ class WallExtractionTests(unittest.TestCase):
         self.assertGreaterEqual(tinted["wall_mask_coverage"], 0.9)
 
     def test_trace_cleaning_reduces_clutter(self) -> None:
-        """清理后线work 条数应明显下降，而墙/房间不受影响"""
+        """显式 --clean-trace 时线work 条数应明显下降，而墙/房间不受影响"""
         path = draw_plan(os.path.join(self.tmp, "hatched.png"), hatch=True)
-        _, raw = run_cli([path, "--px-per-mm", "0.15", "--no-trace-clean"])
-        _, cleaned = run_cli([path, "--px-per-mm", "0.15"])
+        _, raw = run_cli([path, "--px-per-mm", "0.15"])
+        _, cleaned = run_cli([path, "--px-per-mm", "0.15", "--clean-trace"])
         self.assertLess(cleaned["trace_segments"], raw["trace_segments"])
+        self.assertEqual(raw["trace_removed_short"], 0)
+        self.assertEqual(raw["trace_removed_dense"], 0)
         self.assertGreater(cleaned["trace_removed_short"] + cleaned["trace_removed_dense"], 0)
         self.assertEqual(cleaned["trace_clean_basis"], "mm")
         self.assertEqual(cleaned["wall_segments"], raw["wall_segments"])
         self.assertNotIn("rooms", cleaned, "默认不输出房间统计")
+
+    def test_default_trace_keeps_outside_and_short_lines(self) -> None:
+        """默认不做室内裁剪/碎线清理：图签、尺寸、文字笔画都先留住。"""
+        path = draw_plan(os.path.join(self.tmp, "keepall.png"), hatch=True)
+        _, payload = run_cli([path, "--px-per-mm", "0.15"])
+        self.assertEqual(payload["trace_filtered_out"], 0)
+        self.assertEqual(payload["trace_removed_short"], 0)
+        self.assertEqual(payload["trace_removed_dense"], 0)
 
 
 class TraceCleaningTests(unittest.TestCase):

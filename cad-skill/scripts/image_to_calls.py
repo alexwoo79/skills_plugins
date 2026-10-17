@@ -44,11 +44,16 @@ def _seg(x1: float, y1: float, x2: float, y2: float) -> Dict[str, float]:
     """统一成"沿轴区间 + 偏移"的表示：H 用 y 作偏移、x 作区间，V 反之。"""
     length = math.hypot(x2 - x1, y2 - y1)
     dx, dy = x2 - x1, y2 - y1
+    base = {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
     if abs(dy) <= abs(dx):
-        return {"orient": "H", "offset": (y1 + y2) / 2, "start": min(x1, x2),
-                "end": max(x1, x2), "length": length, "len_x": abs(dx), "len_y": abs(dy)}
-    return {"orient": "V", "offset": (x1 + x2) / 2, "start": min(y1, y2),
-            "end": max(y1, y2), "length": length, "len_x": abs(dx), "len_y": abs(dy)}
+        base.update({"orient": "H", "offset": (y1 + y2) / 2, "start": min(x1, x2),
+                     "end": max(x1, x2), "length": length,
+                     "len_x": abs(dx), "len_y": abs(dy)})
+        return base
+    base.update({"orient": "V", "offset": (x1 + x2) / 2, "start": min(y1, y2),
+                 "end": max(y1, y2), "length": length,
+                 "len_x": abs(dx), "len_y": abs(dy)})
+    return base
 
 
 def classify(segment: Dict[str, float], angle_tol_deg: float) -> str:
@@ -288,7 +293,8 @@ def _group_cluster(cluster: List[Dict[str, Any]], join_gap: float, min_opening: 
 
 
 def apply_leaf_evidence(walls: List[Dict[str, Any]], segments: List[Dict[str, float]],
-                        leaf_tol: float, min_ratio: float) -> int:
+                        leaf_tol: float, min_ratio: float,
+                        max_width: float | None = None) -> int:
     """用"门扇线"证据修正洞口类型，返回被改判成门的数量。
 
     宽度分不清门和窗（600mm 可能是卫生间窗，也可能是窄门），但门的图面上一定有一条
@@ -301,6 +307,8 @@ def apply_leaf_evidence(walls: List[Dict[str, Any]], segments: List[Dict[str, fl
         candidates = [s for s in segments if s["orient"] == perpendicular]
         for opening in wall["openings"]:
             width = opening["width"]
+            if max_width and width > max_width:
+                continue          # 太宽的多半是窗/推拉门，别用门扇线硬判成平开门
             hits = []
             for seg in candidates:
                 if seg["length"] < width * min_ratio:
@@ -319,6 +327,296 @@ def apply_leaf_evidence(walls: List[Dict[str, Any]], segments: List[Dict[str, fl
                 opening["kind"] = "door"
                 opening["evidence"] = "leaf"
     return changed
+
+
+def _band_occupancy(gray, wall: Dict[str, Any], pos: float, half: int = 2) -> float:
+    """墙中心线附近一条竖/横带里"有墨"的比例（0~1）。"""
+    mask = gray < 235
+    height, width = mask.shape[:2]
+    thickness = max(4.0, wall["thickness"])
+    hit = total = 0
+    low = int(round(wall["center"] - thickness / 2))
+    high = int(round(wall["center"] + thickness / 2))
+    for delta in range(-half, half + 1):
+        if wall["orient"] == "H":
+            x = int(round(pos + delta))
+            if not 0 <= x < width:
+                continue
+            for y in range(low, high + 1):
+                if 0 <= y < height:
+                    total += 1
+                    hit += int(mask[y, x])
+        else:
+            y = int(round(pos + delta))
+            if not 0 <= y < height:
+                continue
+            for x in range(low, high + 1):
+                if 0 <= x < width:
+                    total += 1
+                    hit += int(mask[y, x])
+    return hit / max(1, total)
+
+
+def detect_band_openings(walls: List[Dict[str, Any]], gray,
+                         min_width: float, max_width: float,
+                         low_ratio: float = 0.65, min_base: float = 0.5) -> int:
+    """填充墙的洞口：墙带"墨量"相对该墙自身基线明显下降的连续段。
+
+    线稿图（墙是白底双线）基线很低，会整体跳过，不影响原来的封边线/缺口路径。
+    这一步只找"墙里空了"的位置，不判断门或窗；类型仍由宽度、门扇线和开启弧决定。
+    """
+    found = 0
+    for wall in walls:
+        positions = list(range(int(wall["start"]), int(wall["end"]) + 1, 2))
+        if len(positions) < 8:
+            continue
+        values = [_band_occupancy(gray, wall, position) for position in positions]
+        base = float(np.percentile(values, 75))
+        if base < min_base:
+            continue                     # 不是填充墙画法
+        low = [value < low_ratio * base for value in values]
+        runs: List[List[int]] = []
+        start = None
+        for index, flag in enumerate(low):
+            if flag and start is None:
+                start = index
+            elif not flag and start is not None:
+                runs.append([start, index - 1])
+                start = None
+        if start is not None:
+            runs.append([start, len(low) - 1])
+
+        merged: List[List[int]] = []
+        for run in runs:
+            if merged and positions[run[0]] - positions[merged[-1][1]] <= 10:
+                merged[-1][1] = run[1]
+            else:
+                merged.append(run)
+
+        for first, last in merged:
+            left, right = positions[first], positions[last]
+            width = right - left
+            if not (min_width <= width <= max_width):
+                continue
+            before = values[max(0, first - 4):first]
+            after = values[last + 1:last + 5]
+            if before and sum(before) / len(before) < 0.75 * base:
+                continue
+            if after and sum(after) / len(after) < 0.75 * base:
+                continue
+            centre = (left + right) / 2
+            if any(abs(op["center"] - centre) <= 0.6 * max(width, op["width"])
+                   for op in wall["openings"]):
+                continue
+            wall["openings"].append({"kind": None, "width": width,
+                                     "center": centre, "evidence": "band"})
+            wall["openings"].sort(key=lambda op: op["center"])
+            found += 1
+    return found
+
+
+def door_arc_geometry(wall: Dict[str, Any], opening: Dict[str, Any],
+                      hinge: str | None = None, swing: Any = None):
+    """门弧在图上的几何：圆心（像素）、起始角、扫角（+90° 或 -90°）、半径。
+
+    图像 y 向下，角度按图像坐标算；`preview` 和"用四条候选弧投票"共用这一份。
+    """
+    width = opening["width"]
+    hinge = hinge or opening.get("hinge", "start")
+    if swing is None:
+        swing = opening.get("swing", 1.0)
+    sign = 1.0
+    if isinstance(swing, str):
+        sign = -1.0 if swing.strip().lower() in ("negative", "minus", "-", "right", "out", "s") else 1.0
+    else:
+        sign = -1.0 if float(swing) < 0 else 1.0
+
+    hinge_distance = (opening["center"] - width / 2 if hinge == "start"
+                      else opening["center"] + width / 2)
+    if wall["orient"] == "H":
+        center = (hinge_distance, wall["center"])
+        ux, uy = 1.0, 0.0
+    else:
+        center = (wall["center"], hinge_distance)
+        ux, uy = 0.0, 1.0
+    # 图像 y 向下、CAD y 向上：图上的"左法线"是 (uy, -ux)，
+    # 直接套 CAD 的 (-uy, ux) 会把每扇门的开向整体镜像（实测四条弧全部落空）
+    nx, ny = uy, -ux
+    start_angle = math.atan2(uy, ux) + (math.pi if hinge == "end" else 0.0)
+    end_angle = math.atan2(ny * sign, nx * sign)
+    delta = (end_angle - start_angle + math.pi) % (2 * math.pi) - math.pi
+    return center, start_angle, delta, width
+
+
+def _ink(binary, x: float, y: float, radius: int) -> bool:
+    height, width = binary.shape[:2]
+    xi, yi = int(round(x)), int(round(y))
+    if not (0 <= xi < width and 0 <= yi < height):
+        return False
+    x0, x1 = max(0, xi - radius), min(width, xi + radius + 1)
+    y0, y1 = max(0, yi - radius), min(height, yi + radius + 1)
+    return bool(binary[y0:y1, x0:x1].any())
+
+
+def infer_door_swings(binary, walls: List[Dict[str, Any]], samples: int = 24,
+                      radius: int = 2, min_score: float = 0.58,
+                      min_margin: float = 0.15,
+                      max_door_px: float | None = None) -> Dict[str, int]:
+    """用"四条候选四分之一弧"投票，反推每扇门的合页侧与开启方向。
+
+    门在图上有门扇线和开启弧；把 start/end × positive/negative 四种可能各采一遍，
+    真实画出的那条弧覆盖率会明显最高。两条候选分数太接近时保持默认值并标记待确认，
+    绝不假装知道开向。
+    """
+    confirmed = unconfirmed = reclassified = 0
+    for wall in walls:
+        for opening in wall["openings"]:
+            if max_door_px and opening["width"] > max_door_px:
+                continue
+            width = opening["width"]
+            thickness = max(1.0, wall["thickness"])
+            # 墙中心线常被线宽/家具带偏半个墙厚；横向最多让一个墙厚，
+            # 纵向让 15% 门宽。只取“最好的那一组”，避免把邻门弧算进来。
+            lateral = (0.0, 4.0, -4.0, 8.0, -8.0, 12.0, -12.0,
+                       0.5 * thickness, -0.5 * thickness,
+                       thickness, -thickness)
+            longitudinal = (0.0, 0.15 * width, -0.15 * width)
+            scores: Dict[Tuple[str, float], float] = {}
+            for hinge in ("start", "end"):
+                for sign in (1.0, -1.0):
+                    best_local = 0.0
+                    for shift in lateral:
+                        for along in longitudinal:
+                            local_wall = dict(wall)
+                            local_wall["center"] = wall["center"] + shift
+                            local_opening = dict(opening)
+                            local_opening["center"] = min(
+                                max(opening["center"] + along,
+                                    wall["start"] + width / 2),
+                                wall["end"] - width / 2)
+                            center, start_angle, delta, radius_px = door_arc_geometry(
+                                local_wall, local_opening, hinge, sign)
+                            hits = 0
+                            counted = 0
+                            for step in range(1, max(2, samples)):
+                                ratio = step / samples
+                                angle = start_angle + delta * ratio
+                                hits += _ink(binary,
+                                             center[0] + radius_px * math.cos(angle),
+                                             center[1] + radius_px * math.sin(angle), radius)
+                                counted += 1
+                            best_local = max(best_local, hits / counted)
+                    scores[(hinge, sign)] = best_local
+
+            best = max(scores, key=scores.get)
+            best_score = scores[best]
+            second = max(value for key, value in scores.items() if key != best)
+            if best_score >= min_score and best_score - second >= min_margin:
+                if opening.get("kind") != "door":
+                    opening["kind"] = "door"
+                    opening["evidence"] = "arc"
+                    reclassified += 1
+                opening["hinge"] = best[0]
+                opening["swing"] = "positive" if best[1] > 0 else "negative"
+                opening["swing_confirmed"] = True
+                opening["swing_score"] = round(best_score, 3)
+                opening["swing_margin"] = round(best_score - second, 3)
+                confirmed += 1
+            else:
+                if opening.get("kind") != "door":
+                    continue
+                opening["swing_confirmed"] = False
+                opening["swing_score"] = round(best_score, 3)
+                opening["swing_margin"] = round(best_score - second, 3)
+                unconfirmed += 1
+    return {"confirmed": confirmed, "unconfirmed": unconfirmed,
+            "reclassified": reclassified}
+
+
+def _median(values: List[float]) -> float:
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[middle]
+    return (ordered[middle - 1] + ordered[middle]) / 2
+
+
+def detect_stairs(segments: List[Dict[str, float]], scale: float,
+                  origin_px: Tuple[float, float] = (0.0, 0.0),
+                  min_steps: int = 5, tread_mm: Tuple[float, float] = (180.0, 400.0),
+                  length_mm: Tuple[float, float] = (700.0, 2500.0),
+                  spacing_tol: float = 0.2, length_tol: float = 0.25
+                  ) -> List[Dict[str, Any]]:
+    """直跑楼梯：等间距、等长、互相平行的短线簇（≥ min_steps 条）。
+
+    返回候选 `{spec, segments, tread, width, steps}`；`spec` 可直接写进 plan.json。
+    严格限制步宽/踏步长度/等距容差，避免把门窗封边、家具排线当成楼梯。
+    """
+    low_tread, high_tread = tread_mm[0] * scale, tread_mm[1] * scale
+    low_len, high_len = length_mm[0] * scale, length_mm[1] * scale
+    candidates: List[Dict[str, Any]] = []
+    for orient in ("H", "V"):
+        pool = [seg for seg in segments
+                if seg["orient"] == orient and low_len <= seg["length"] <= high_len]
+        pool.sort(key=lambda seg: (seg["length"], seg["offset"]))
+        consumed = set()
+        for seed in pool:
+            if id(seed) in consumed:
+                continue
+            cluster = [seg for seg in pool
+                       if abs(seg["length"] - seed["length"]) <= length_tol * seed["length"]]
+            cluster.sort(key=lambda seg: seg["offset"])
+            best: List[Dict[str, float]] = []
+            for index in range(len(cluster)):
+                run = [cluster[index]]
+                for seg in cluster[index + 1:]:
+                    gap = seg["offset"] - run[-1]["offset"]
+                    if gap < low_tread * 0.85:
+                        continue
+                    if gap > high_tread * 1.15:
+                        break
+                    overlaps = min(seg["end"], run[-1]["end"]) - max(seg["start"], run[-1]["start"])
+                    if overlaps < 0.75 * min(seg["length"], run[-1]["length"]):
+                        continue
+                    gaps = [run[k + 1]["offset"] - run[k]["offset"] for k in range(len(run) - 1)]
+                    if gaps and abs(gap / _median(gaps) - 1.0) > spacing_tol:
+                        continue
+                    run.append(seg)
+                if len(run) > len(best):
+                    best = run
+            if len(best) < min_steps:
+                continue
+            gaps = [best[k + 1]["offset"] - best[k]["offset"] for k in range(len(best) - 1)]
+            tread = _median(gaps)
+            width = _median([seg["length"] for seg in best])
+            start = _median([seg["start"] for seg in best])
+            centre = start + width / 2  # stair 规格的 origin 在第一条踏步线的中点
+            if orient == "H":
+                # 像素 y 向下、CAD y 向上：H 向踏步线是横着画的，楼梯走向朝 CAD 下方
+                spec = {"origin": [round(to_mm(centre, scale, "x", origin_px[0]), 1),
+                                   round(to_mm(best[0]["offset"], scale, "y", origin_px[1]), 1)],
+                        "angle": -90.0}
+            else:
+                spec = {"origin": [round(to_mm(best[0]["offset"], scale, "x", origin_px[0]), 1),
+                                   round(to_mm(centre, scale, "y", origin_px[1]), 1)],
+                        "angle": 0.0}
+            spec.update({"steps": len(best) - 1,
+                         "tread": round(tread / scale, 1),
+                         "width": round(width / scale, 1),
+                         "label": "楼梯"})
+            candidate = {"spec": spec, "segments": best, "tread": tread / scale,
+                         "width": width / scale, "steps": len(best) - 1}
+            if any(_same_run(candidate, other) for other in candidates):
+                continue
+            candidates.append(candidate)
+            consumed.update(id(seg) for seg in best)
+    return candidates
+
+
+def _same_run(first: Dict[str, Any], second: Dict[str, Any]) -> bool:
+    a, b = first["spec"], second["spec"]
+    return (math.dist(a["origin"], b["origin"]) < 1.0 and
+            abs(a["steps"] - b["steps"]) <= 1)
 
 
 # ---------------------------------------------------------------- 图像管线
@@ -393,6 +691,22 @@ def to_mm(value: float, scale: float, axis: str, origin: float) -> float:
 def build_plan_spec(walls: List[Dict[str, Any]], scale: float, origin_px: Tuple[float, float],
                     grid: float, grid_shift: float) -> Dict[str, Any]:
     """墙段 → wall_plan.py 的 plan.json 结构（中心线两端点 + 厚度 + 洞口）"""
+    def opening_entry(op: Dict[str, Any]) -> Dict[str, Any]:
+        entry: Dict[str, Any] = {
+            "kind": op["kind"],
+            "width": round(op["width"] / scale, 1),
+            # center 是"距墙起点"的距离：像素绝对值要先减去墙起点，
+            # 否则会整体偏移一个原点的量（实测偏了 200mm 才发现）
+            "center": round((op["center"] - wall["start"]) / scale, 1),
+        }
+        if op["kind"] == "door":
+            entry["hinge"] = op.get("hinge", "start")
+            entry["swing"] = op.get("swing", "positive")
+            if op.get("swing_confirmed") is False:
+                entry["needs_review"] = True
+                entry["review_reason"] = "未找到可信开启弧：门的合页侧/开向是默认值"
+        return entry
+
     spec_walls = []
     for index, wall in enumerate(walls, start=1):
         if wall["orient"] == "H":
@@ -411,50 +725,56 @@ def build_plan_spec(walls: List[Dict[str, Any]], scale: float, origin_px: Tuple[
             "from": [round(snap(start_xy[0]), 1), round(snap(start_xy[1]), 1)],
             "to": [round(snap(end_xy[0]), 1), round(snap(end_xy[1]), 1)],
             "thickness": round(snap_to_grid(wall["thickness"] / scale, grid, grid_shift), 1),
-            "openings": [
-                {"kind": op["kind"],
-                 "width": round(op["width"] / scale, 1),
-                 # center 是"距墙起点"的距离：像素绝对值要先减去墙起点，
-                 # 否则会整体偏移一个原点的量（实测偏了 200mm 才发现）
-                 "center": round((op["center"] - wall["start"]) / scale, 1),
-                 **({"hinge": "start", "swing": "positive"} if op["kind"] == "door" else {})}
-                for op in wall["openings"]
-            ],
+            "openings": [opening_entry(op) for op in wall["openings"]],
         }
         spec_walls.append(entry)
     return {"walls": spec_walls}
 
 
-def write_dxf(path: str, walls: List[Dict[str, Any]], leftovers: List[Dict[str, float]],
-              scale: float, origin_px: Tuple[float, float], wall_layer: str, trace_layer: str) -> int:
-    """写 DXF：墙配对结果画成闭合矩形（与 CAD 侧的墙身约定一致），其余线进描图图层"""
+def leftover_lines_mm(leftovers: List[Dict[str, float]], scale: float,
+                      origin_px: Tuple[float, float]) -> List[List[float]]:
+    """未配对线work → 毫米坐标线段（写进 A-TRACE，不丢斜线和家具）。"""
+    lines: List[List[float]] = []
+    for seg in leftovers:
+        if "x1" in seg and "y2" in seg:
+            x1, y1, x2, y2 = seg["x1"], seg["y1"], seg["x2"], seg["y2"]
+        elif seg["orient"] == "H":
+            x1, x2, y1, y2 = seg["start"], seg["end"], seg["offset"], seg["offset"]
+        else:
+            x1, x2, y1, y2 = seg["offset"], seg["offset"], seg["start"], seg["end"]
+        lines.append([to_mm(x1, scale, "x", origin_px[0]),
+                      to_mm(y1, scale, "y", origin_px[1]),
+                      to_mm(x2, scale, "x", origin_px[0]),
+                      to_mm(y2, scale, "y", origin_px[1])])
+    return lines
+
+
+def write_linework_dxf(path: str, segments: List[Dict[str, float]], scale: float,
+                       origin_px: Tuple[float, float], layer: str = "A-TRACE") -> int:
+    """忠实描线：把所有检测到的线段原样写进 DXF，不做墙体替换、不推断门窗。
+
+    这是 `--mode lines` 的默认出口——用户没有要求清理时，先保住图源里的每一段线。
+    """
     import ezdxf
     doc = ezdxf.new("R2010")
+    doc.header["$INSUNITS"] = 4 if scale != 1.0 else 0
+    if layer not in doc.layers:
+        doc.layers.new(layer, dxfattribs={"color": 8})
     model = doc.modelspace()
-    half = (lambda w: w["thickness"] / scale / 2)
-    for wall in walls:
-        half_t = half(wall)
-        if wall["orient"] == "H":
-            corners = [(wall["start"], wall["center"] - half_t), (wall["end"], wall["center"] - half_t),
-                       (wall["end"], wall["center"] + half_t), (wall["start"], wall["center"] + half_t)]
-        else:
-            corners = [(wall["center"] - half_t, wall["start"]), (wall["center"] - half_t, wall["end"]),
-                       (wall["center"] + half_t, wall["end"]), (wall["center"] + half_t, wall["start"])]
-        points = [(to_mm(x, scale, "x", origin_px[0]), to_mm(y, scale, "y", origin_px[1]))
-                  for x, y in corners]
-        model.add_lwpolyline(points, close=True, dxfattribs={"layer": wall_layer})
-    for seg in leftovers:
-        if seg["orient"] == "D":
-            x1, y1, x2, y2 = seg.get("x1", 0), seg.get("y1", 0), seg.get("x2", 0), seg.get("y2", 0)
+    for seg in segments:
+        if "x1" in seg and "y2" in seg:
+            x1, y1, x2, y2 = seg["x1"], seg["y1"], seg["x2"], seg["y2"]
         elif seg["orient"] == "H":
-            x1, y1, x2, y2 = seg["start"], seg["offset"], seg["end"], seg["offset"]
+            x1, x2, y1, y2 = seg["start"], seg["end"], seg["offset"], seg["offset"]
         else:
-            x1, y1, x2, y2 = seg["offset"], seg["start"], seg["offset"], seg["end"]
-        model.add_line((to_mm(x1, scale, "x", origin_px[0]), to_mm(y1, scale, "y", origin_px[1])),
-                       (to_mm(x2, scale, "x", origin_px[0]), to_mm(y2, scale, "y", origin_px[1])),
-                       dxfattribs={"layer": trace_layer})
+            x1, x2, y1, y2 = seg["offset"], seg["offset"], seg["start"], seg["end"]
+        model.add_line((to_mm(x1, scale, "x", origin_px[0]),
+                        to_mm(y1, scale, "y", origin_px[1])),
+                       (to_mm(x2, scale, "x", origin_px[0]),
+                        to_mm(y2, scale, "y", origin_px[1])),
+                       dxfattribs={"layer": layer})
     doc.saveas(path)
-    return len(walls) + len(leftovers)
+    return len(segments)
 
 
 def render_preview(path: str, image_path: str, walls: List[Dict[str, Any]],
@@ -484,6 +804,19 @@ def render_preview(path: str, image_path: str, walls: List[Dict[str, Any]],
                 y = int(opening["center"])
                 cv2.line(canvas, (int(wall["center"] - wall["thickness"]), y),
                          (int(wall["center"] + wall["thickness"]), y), (0, 170, 0), 1)
+            if opening.get("kind") != "door":
+                continue
+            center, start_angle, delta, radius_px = door_arc_geometry(wall, opening)
+            if opening.get("swing_confirmed") is False:
+                # 没找到可信弧：橙色空心圈提醒"这里是猜的"
+                cv2.circle(canvas, (int(round(center[0])), int(round(center[1]))), 5,
+                           (0, 140, 255), 1)
+                continue
+            points = np.array([
+                (int(round(center[0] + radius_px * math.cos(start_angle + delta * step / 20))),
+                 int(round(center[1] + radius_px * math.sin(start_angle + delta * step / 20))))
+                for step in range(21)], dtype=np.int32)
+            cv2.polylines(canvas, [points], False, (0, 140, 255), 1)
     for seg in leftovers:
         if seg["orient"] == "H":
             cv2.line(canvas, (int(seg["start"]), int(seg["offset"])),
@@ -519,9 +852,26 @@ def resolve_scale(args) -> Optional[float]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="线稿栅格图 → 墙线 / 调用序列 / DXF")
+    parser = argparse.ArgumentParser(
+        description="线稿栅格图 → 忠实描线 DXF（默认）/ 墙体与洞口调用序列（--mode walls）")
     parser.add_argument("image")
-    parser.add_argument("--mode", choices=("walls", "lines"), default="walls")
+    parser.add_argument("--mode", choices=("walls", "lines"), default="lines",
+                        help="lines（默认）= 忠实描线，保留所有检测到的线段；"
+                             "walls = 额外做墙体/洞口结构化提取")
+    parser.add_argument("--tracer", choices=("hybrid", "hough"), default="hybrid",
+                        help="lines 模式的后端：hybrid（默认，骨架+轮廓+可选 OCR）或 hough（旧线段）")
+    parser.add_argument("--max-side", type=int, default=2048,
+                        help="hybrid 工作画布长边（默认 2048；0=原图）")
+    parser.add_argument("--solid-px", type=float, default=16.0,
+                        help="hybrid：笔画厚度达到该值判为实心区域（像素）")
+    parser.add_argument("--simplify", type=float, default=1.2,
+                        help="hybrid：多段线简化容差（像素）")
+    parser.add_argument("--ocr-text", action="store_true",
+                        help="hybrid：OCR 文字写成 A-TEXT（并移除原文字笔画）")
+    parser.add_argument("--keep-text-strokes", action="store_true",
+                        help="hybrid + OCR：保留原文字笔画")
+    parser.add_argument("--ocr-langs", default="en-US,zh-Hans",
+                        help="hybrid OCR 语言（逗号分隔）")
     parser.add_argument("--px-per-mm", type=float, help="像素/毫米（标定方式一）")
     parser.add_argument("--calibrate", help='两个像素点 "x1,y1 x2,y2"（标定方式二）')
     parser.add_argument("--real", type=float, help="上述两点的真实距离（毫米）")
@@ -543,11 +893,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--grid", type=float, default=10.0, help="网格吸附间距（毫米，默认 10）")
     parser.add_argument("--grid-shift", type=float, default=15.0, help="网格吸附允许的最大位移（毫米）")
     parser.add_argument("--min-line-mm", type=float, default=300.0, help="最短候选线（毫米，默认 300）")
+    parser.add_argument("--min-line-px", type=float, default=10.0,
+                        help="未标定时的最短候选线（像素，默认 10）")
     parser.add_argument("--hough-threshold", type=int, default=40)
     parser.add_argument("--max-gap-px", type=float, default=4.0)
     parser.add_argument("--adaptive", action="store_true", help="自适应阈值（扫描件/光照不均）")
     parser.add_argument("--deskew", action="store_true", help="先纠偏")
     parser.add_argument("--despeckle", action="store_true", help="中值去噪")
+    parser.add_argument("--stairs", action="store_true",
+                        help="识别直跑楼梯并写入 plan.json（等距平行踏步线；默认只识别墙与洞口）")
     parser.add_argument("--out-plan", help="输出 plan.json")
     parser.add_argument("--out-calls", help="输出调用序列 JSON（复用 wall_plan.py 生成）")
     parser.add_argument("--out-dxf", help="输出 DXF（写线段或墙矩形）")
@@ -569,7 +923,30 @@ def main(argv=None) -> int:
                   sys.stdout, ensure_ascii=False)
         print()
         return EXIT_USAGE
+    calibrated = scale is not None
     scale = scale or 1.0
+
+    if args.mode == "lines" and args.tracer == "hybrid":
+        if args.out_plan or args.out_calls or args.stairs:
+            json.dump({"ok": False,
+                       "error": "hybrid 忠实描线不产生 plan/calls/stairs；"
+                                "要结构化输出请用 --tracer hough 或 --mode walls"},
+                      sys.stdout, ensure_ascii=False)
+            print()
+            return EXIT_USAGE
+        import sketch_trace
+        result = sketch_trace.trace(
+            args.image, max_side=args.max_side, solid_px=args.solid_px,
+            simplify=args.simplify, ocr=args.ocr_text,
+            keep_text_strokes=args.keep_text_strokes,
+            languages=tuple(args.ocr_langs.split(",")),
+            px_per_mm=scale if calibrated else None,
+            out_dxf=args.out_dxf, overlay=args.preview)
+        result.update({"mode": "lines", "tracer": "hybrid", "dxf_mode": "trace"})
+        json.dump(result, sys.stdout, ensure_ascii=False,
+                  indent=2 if args.pretty else None)
+        print()
+        return EXIT_OK
 
     try:
         binary, matrix = load_binary(args.image, args.adaptive, args.deskew, args.despeckle)
@@ -578,12 +955,20 @@ def main(argv=None) -> int:
         print()
         return EXIT_FAILURE
 
-    min_length = max(8.0, args.min_line_mm * scale)
+    # 标定过就按毫米；没标定时 min_line_mm 没有意义（1mm=1px 会把短线全滤掉）
+    min_length = (max(8.0, args.min_line_mm * scale) if calibrated
+                  else max(4.0, args.min_line_px))
     segments = detect_segments(binary, min_length, args.max_gap_px, args.hough_threshold, args.angle_tol)
     axis = [s for s in segments if s["orient"] in ("H", "V")]
     diagonals = [s for s in segments if s["orient"] == "D"]
     merged = merge_collinear(axis, args.merge_tol * scale, args.join_gap * scale)
-    walls, leftovers = pair_walls(merged, args.min_wall * scale, args.max_wall * scale, args.overlap)
+    origin_px = (args.origin[0], args.origin[1] or binary.shape[0])
+    # 楼梯踏步是"等间距平行短线"，容易被当成厚 260mm 的墙；开启 --stairs 时先摘出来
+    stair_candidates = detect_stairs(merged, scale, origin_px) if args.stairs else []
+    stair_ids = {id(seg) for candidate in stair_candidates for seg in candidate["segments"]}
+    wall_source = [seg for seg in merged if id(seg) not in stair_ids]
+    walls, leftovers = pair_walls(wall_source, args.min_wall * scale, args.max_wall * scale,
+                                  args.overlap)
     # 封边线长度≈墙厚（240mm 在 0.2px/mm 下只有 48px），会被主通道的最短线长滤掉，
     # 因此单独跑一趟短线检测专供洞口定位；阈值提高以保证只有实线段入选。
     jamb_segments = detect_segments(binary, max(6.0, 0.5 * args.min_wall * scale),
@@ -595,6 +980,11 @@ def main(argv=None) -> int:
     # 封边线定位洞口（更稳、宽度更准），再按宽度补类型、用门扇线证据修正
     from_jamb = detect_jamb_openings(grouped, jamb_segments, merged,
                                      args.min_opening * scale, args.max_opening * scale)
+    # 填充墙（家装/营销图）的门窗洞口常常保留封边线但墙带是空的：
+    # 按墙带墨量相对下降再补一遍；纯线稿基线太低会整体跳过
+    gray = cv2.imread(args.image, cv2.IMREAD_GRAYSCALE)
+    from_band = detect_band_openings(grouped, gray, args.min_opening * scale,
+                                     args.max_opening * scale) if gray is not None else 0
     for wall in grouped:
         for opening in wall["openings"]:
             if not opening.get("kind"):
@@ -602,10 +992,12 @@ def main(argv=None) -> int:
                 opening["kind"] = ("door" if args.door_min <= width_mm <= args.door_max
                                    else "window")
     leaf_fixed = apply_leaf_evidence(grouped, merged, leaf_tol=args.merge_tol * scale,
-                                     min_ratio=0.6)
+                                     min_ratio=0.6, max_width=args.door_max * scale * 1.25)
+    swings = infer_door_swings(binary, grouped, max_door_px=args.door_max * scale * 1.25)
 
-    origin_px = (args.origin[0], args.origin[1] or binary.shape[0])
     spec = build_plan_spec(grouped, scale, origin_px, args.grid, args.grid_shift)
+    if stair_candidates:
+        spec["stairs"] = [candidate["spec"] for candidate in stair_candidates]
     stats = {
         "ok": True,
         "mode": args.mode,
@@ -619,10 +1011,18 @@ def main(argv=None) -> int:
         "walls": len(grouped),
         "openings": sum(len(wall["openings"]) for wall in grouped),
         "openings_from_jambs": from_jamb,
+        "openings_from_band": from_band,
         "door_leaf_evidence": leaf_fixed,
+        "door_swings_confirmed": swings["confirmed"],
+        "door_swings_unconfirmed": swings["unconfirmed"],
+        "door_swings_reclassified": swings["reclassified"],
+        "stairs_detected": len(stair_candidates),
         "unpaired_lines": len(leftovers),
         "notes": [
+            ("忠实描线：未做墙体替换/门窗推断，图元按检测结果原样保留"
+             if args.mode == "lines" else "结构化模式：墙体/洞口为推断结果"),
             "洞口类型按宽度猜测，必须看预览图确认",
+            "门的合页侧/开向由开启弧投票推断；没找到可信弧的门在预览里是橙色圈",
             "识别结果是中心线 + 厚度；洞口位置需要在 CAD/预览里核对",
         ],
     }
@@ -631,10 +1031,14 @@ def main(argv=None) -> int:
         with open(args.out_plan, "w", encoding="utf-8") as handle:
             json.dump(spec, handle, ensure_ascii=False, indent=2)
         stats["plan"] = args.out_plan
-    if args.out_calls:
-        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    built = None
+    if args.out_calls or (args.out_dxf and args.mode == "walls"):
         import wall_plan
-        built = wall_plan.build_plan(spec, {"wall": "A-WALL", "door": "A-DOOR", "window": "A-WINDOW"})
+        built = wall_plan.build_plan(spec, {"wall": "A-WALL", "door": "A-DOOR",
+                                            "window": "A-WINDOW"})
+        stats["needs_review"] = built["summary"]["needs_review"]
+    if args.out_calls:
         with open(args.out_calls, "w", encoding="utf-8") as handle:
             json.dump(built, handle, ensure_ascii=False, indent=2)
         stats["calls"] = args.out_calls
@@ -642,10 +1046,22 @@ def main(argv=None) -> int:
         stats["warnings"] = built["warnings"]
     if args.out_dxf:
         try:
-            stats["dxf_entities"] = write_dxf(args.out_dxf, grouped, leftovers, scale, origin_px,
-                                              "A-WALL", "A-TRACE")
+            if args.mode == "lines":
+                stats["dxf_entities"] = write_linework_dxf(
+                    args.out_dxf, merged, scale, origin_px)
+                stats["dxf_mode"] = "trace"
+            else:
+                import plan_render
+                written = plan_render.write_dxf(
+                    spec, built, args.out_dxf,
+                    trace_lines=leftover_lines_mm(leftovers, scale, origin_px))
+                stats["dxf_mode"] = "structured"
+                if "trace_lines" in written:
+                    stats["dxf_trace_lines"] = written["trace_lines"]
             stats["dxf"] = args.out_dxf
-        except ImportError:
+            if args.mode == "walls":
+                stats["dxf_entities"] = written["entities"]
+        except (ImportError, RuntimeError):
             stats["dxf_error"] = "需要 ezdxf：pip install ezdxf"
     if args.preview:
         render_preview(args.preview, args.image, grouped, leftovers, matrix)

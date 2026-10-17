@@ -51,6 +51,11 @@
 
 **尺寸**：`add_dimension` 成对给控制尺寸——总开间/总进深、各轴线间距。放在图形外侧，避免与墙线、文字重叠。
 
+**用脚本生成而不是手算**：轴网、分段尺寸和直跑楼梯都写在 `plan.json` 的 `axis` / `dims` /
+`stairs` 里，由 `scripts/plan_render.py` 一次出 calls、`.scr`、DXF 和 SVG 预览；
+字段与示例见 `references/plan-render.md`。DXF 后端加 `--blocks` 可以把门窗换成
+单开/推拉图块；直连落图仍按基础图元。
+
 ## 给用户的 Prompt 模板（可直接复用）
 
 方案阶段（不调 CAD）：

@@ -42,8 +42,14 @@ python scripts\cad_direct.py save --path D:\out\two-bedroom.dwg
 python scripts\cad_direct.py draw --calls calls.json          # 先加 --dry-run 校验
 ```
 
-用 MCP 通道时对应的是 `draw_script(script=<plan.scr 全文>)`（整批）
-或按 `calls.json` 逐条调用绘图工具。
+CAD 不在手边时，改用同一条几何链路出 DXF/SVG，先确认方案再落图：
+
+```powershell
+python scripts\plan_render.py assets\example-two-bedroom\plan.json `
+    --out-dxf plan.dxf --out-svg preview.svg --out-calls calls.json
+```
+
+把 `plan.dxf` 在 Windows 侧打开另存 DWG，或把 `plan.scr` 交给那台机器执行。
 
 ## 预期结果与检查点
 

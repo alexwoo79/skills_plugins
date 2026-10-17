@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""cad_direct — 不用 MCP，直接用程序调用 CAD 的命令行入口。
+"""cad_direct — 直接用程序调用 CAD 的命令行入口。
 
 驱动层是内联在 skill 里的 `vendor/cad_core.py`（同样的 COM 层：图层/模型空间缓存、
 run_script 批量脚本与 USERS1 哨兵确认、忙碌重试、撤销组）。
@@ -14,7 +14,7 @@ run_script 批量脚本与 USERS1 哨兵确认、忙碌重试、撤销组）。
   cad_direct.py layers
   cad_direct.py entities --type line --limit 20
   cad_direct.py draw --calls calls.json           # wall_plan.py 的输出可直接喂进来
-  cad_direct.py script --file plan.scr            # 整批落图（推荐，等价 MCP 的 draw_script）
+  cad_direct.py script --file plan.scr            # 整批落图（推荐）
   cad_direct.py shot --out check.png              # 截图交给 Codex 看
   cad_direct.py save --path D:\\out\\plan.dwg
 """
@@ -81,7 +81,7 @@ def _has_cad() -> bool:
 
 
 def connect(controller: CADController | None = None) -> CADController:
-    """连接已运行的 CAD；没有实例时拉起一个（与 MCP 服务端行为一致）"""
+    """连接已运行的 CAD；没有实例时拉起一个"""
     controller = controller or CADController()
     if controller.is_running():
         return controller
@@ -107,7 +107,7 @@ PRIMITIVE_KEYS = {
 
 def dispatch(controller: CADController, tool: str, args: dict):
     style = {"layer": args.get("layer"), "color": args.get("color")}
-    # 文字与标注没有线宽参数（与 CAD-MCP 的工具签名一致），传了会 TypeError
+    # 文字与标注没有线宽参数，传了会 TypeError
     if tool not in ("draw_text", "add_dimension"):
         style["lineweight"] = args.get("lineweight")
     if tool == "draw_line":
@@ -387,7 +387,7 @@ def _edit(operation, args, new_entity: bool = False, multiple: bool = False) -> 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="cad_direct.py",
-                                     description="直接用程序调用 CAD（不经过 MCP）")
+                                     description="直接用程序调用 CAD（Windows COM）")
     parser.add_argument("--cad-type", choices=["AUTOCAD", "GCAD", "GSTARCAD", "ZWCAD"],
                         help="覆盖 CAD 类型（默认读 CAD_TYPE 环境变量，再退回 AUTOCAD）")
     parser.add_argument("--output-dir", help="脚本落盘目录（默认读 CAD_OUTPUT_DIR，再退回 ./cad_output）")
@@ -504,7 +504,8 @@ def main(argv=None) -> int:
     if args.output_dir:
         config["output"]["directory"] = args.output_dir
 
-    if not _has_cad():
+    dry_run_only = args.command == "draw" and getattr(args, "dry_run", False)
+    if not _has_cad() and not dry_run_only:
         return _fail("缺少 pywin32：请在装了 CAD 的 Windows 上执行 pip install pywin32 pillow"
                      + (f"（驱动层导入失败: {_CORE_ERROR}）" if _CORE_ERROR else ""))
     try:

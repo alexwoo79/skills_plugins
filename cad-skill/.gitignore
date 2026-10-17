@@ -1,0 +1,10 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+
+# 转换产物 / 运行时输出
+cad_output/*
+!cad_output/.gitkeep

@@ -141,6 +141,22 @@ class CadDirectCliTests(unittest.TestCase):
         self.assertTrue(payload["dry_run"])
         self.assertEqual(self.doc.entities, [])
 
+    def test_dry_run_works_without_pywin32(self) -> None:
+        """校验契约应该能在没有 CAD 的机器上跑；真正落图才要求 pywin32。"""
+        calls = [{"tool": "draw_line", "args": {"start_point": [0, 0], "end_point": [1, 1]}}]
+        original = cad_direct._has_cad
+        cad_direct._has_cad = lambda: False
+        try:
+            code, payload = run_cli(["draw", "--calls", self._calls_file(calls), "--dry-run"])
+            self.assertEqual(code, 0, payload)
+            self.assertTrue(payload["dry_run"])
+
+            code, payload = run_cli(["stats"])
+            self.assertEqual(code, 1)
+            self.assertIn("pywin32", payload["error"])
+        finally:
+            cad_direct._has_cad = original
+
     def test_draw_rejects_bad_spec(self) -> None:
         calls = [{"tool": "draw_lwpolyline", "args": {}}]
         code, payload = run_cli(["draw", "--calls", self._calls_file(calls)])
@@ -228,7 +244,7 @@ class CliSubprocessTests(unittest.TestCase):
         self.assertIn("pywin32", payload["error"])
 
     def test_wall_plan_output_feeds_draw(self) -> None:
-        """skill 的几何脚本 → CLI 直接落图（不用 MCP、不用手工拷文件）"""
+        """skill 的几何脚本 → CLI 直接落图（不用手工拷文件）"""
         plan_path = os.path.join(self.tmp.name, "plan.json")
         with open(plan_path, "w", encoding="utf-8") as handle:
             json.dump({"walls": [{"from": [0, 0], "to": [12000, 0], "thickness": 240,

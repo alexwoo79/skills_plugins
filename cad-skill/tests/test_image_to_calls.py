@@ -83,7 +83,11 @@ def render(calls, path: str, noise: float = 0.0, rotate: float = 0.0) -> str:
             cx, cy, r = args["center"][0], args["center"][1], args["radius"]
             box = [MARGIN + (cx - r) * PPM, MARGIN + (8000 - (cy + r)) * PPM,
                    MARGIN + (cx + r) * PPM, MARGIN + (8000 - (cy - r)) * PPM]
-            draw.arc(box, start=-(args["end_angle"] or 360), end=-args["start_angle"], fill=0, width=2)
+            # 注意：end_angle=0 是合法角度，不能用 `or 360` 兜底（那会画成 270°）
+            end_angle = args["end_angle"]
+            if abs(float(end_angle)) < 1e-9:
+                end_angle = 0.0
+            draw.arc(box, start=-float(end_angle), end=-args["start_angle"], fill=0, width=2)
     if noise:
         array = np.array(image).astype(np.int16)
         rng = np.random.default_rng(7)
@@ -122,6 +126,20 @@ def normalize(plan) -> list:
                          for op in wall["openings"]],
         })
     return result
+
+
+def door_geometry_mm(wall, opening):
+    """门的物理几何：合页点 + 开启方向（与墙的书写方向无关，便于比对）。"""
+    (x1, y1), (x2, y2) = wall["from"], wall["to"]
+    length = math.hypot(x2 - x1, y2 - y1)
+    ux, uy = (x2 - x1) / length, (y2 - y1) / length
+    nx, ny = -uy, ux
+    width = opening["width"]
+    center = opening.get("center", 0)
+    hinge_at = center - width / 2 if opening.get("hinge", "start") == "start" else center + width / 2
+    hinge = (x1 + ux * hinge_at, y1 + uy * hinge_at)
+    sign = -1.0 if str(opening.get("swing", "positive")).startswith("neg") else 1.0
+    return hinge, (nx * sign, ny * sign)
 
 
 def compare(truth: list, found: list, axis_tol: float = 60) -> dict:
@@ -220,6 +238,8 @@ class VectorizeTests(unittest.TestCase):
         self.assertGreaterEqual(metrics["openings_hit"], 7, metrics)
         self.assertLessEqual(metrics["axis"], 40)
         self.assertLessEqual(metrics["thickness"], 30)
+        # 噪声/旋转下仍能从弧反推开向（实测 4 扇全部确认），但允许掉 1 扇
+        self.assertGreaterEqual(payload["door_swings_confirmed"], 3, payload)
 
     def test_calibration_is_required_for_walls_mode(self) -> None:
         code, payload = run_cli([self.full, "--mode", "walls"])
@@ -229,7 +249,22 @@ class VectorizeTests(unittest.TestCase):
     def test_lines_mode_works_without_calibration(self) -> None:
         code, payload = run_cli([self.full, "--mode", "lines"])
         self.assertEqual(code, 0, payload)
-        self.assertEqual(payload["px_per_mm"], 1.0)
+        self.assertIsNone(payload["px_per_mm"])      # 未标定：输出像素，不冒充毫米
+        self.assertIn("working_size", payload)
+
+    @unittest.skipIf(ezdxf is None, "需要 ezdxf")
+    def test_default_mode_is_faithful_trace(self) -> None:
+        """不给模式时默认 hybrid 忠实描线：无需标定，DXF 只含描线结果。"""
+        dxf_path = os.path.join(self.tmp, "default.dxf")
+        code, payload = run_cli([self.full, "--out-dxf", dxf_path])
+        self.assertEqual(code, 0, payload)
+        self.assertEqual(payload["mode"], "lines")
+        self.assertEqual(payload["tracer"], "hybrid")
+        self.assertEqual(payload["dxf_mode"], "trace")
+        entities = list(ezdxf.readfile(dxf_path).modelspace())
+        self.assertEqual(len(entities), payload["entities"])
+        self.assertTrue({entity.dxf.layer for entity in entities}
+                        <= {"A-SKETCH", "A-SOLID", "A-TEXT"})
 
     def test_calls_output_feeds_cad_direct(self) -> None:
         """图 → plan.json → calls.json → CAD：整条链路跑通（假 COM）"""
@@ -253,14 +288,111 @@ class VectorizeTests(unittest.TestCase):
 
     @unittest.skipIf(ezdxf is None, "需要 ezdxf")
     def test_dxf_output(self) -> None:
+        """lines 模式默认走 hybrid：细线骨架 + 实心轮廓，不替换成墙体/门窗。"""
         dxf_path = os.path.join(self.tmp, "trace.dxf")
         code, payload = run_cli([self.full, "--mode", "lines", "--px-per-mm", str(PPM),
                                  "--origin", ORIGIN, "--out-dxf", dxf_path])
         self.assertEqual(code, 0, payload)
+        self.assertEqual(payload["dxf_mode"], "trace")
+        self.assertEqual(payload["tracer"], "hybrid")
+        doc = ezdxf.readfile(dxf_path)
+        entities = list(doc.modelspace())
+        self.assertTrue({entity.dxf.layer for entity in entities}
+                        <= {"A-SKETCH", "A-SOLID", "A-TEXT"})
+        self.assertEqual(len(entities), payload["entities"])
+        self.assertFalse(any(entity.dxftype() == "ARC" for entity in entities))
+
+    @unittest.skipIf(ezdxf is None, "需要 ezdxf")
+    def test_hough_tracer_still_available(self) -> None:
+        dxf_path = os.path.join(self.tmp, "hough.dxf")
+        code, payload = run_cli([self.full, "--mode", "lines", "--tracer", "hough",
+                                 "--px-per-mm", str(PPM), "--origin", ORIGIN,
+                                 "--out-dxf", dxf_path])
+        self.assertEqual(code, 0, payload)
+        entities = list(ezdxf.readfile(dxf_path).modelspace())
+        self.assertEqual({entity.dxf.layer for entity in entities}, {"A-TRACE"})
+        self.assertEqual(len(entities), payload["merged_segments"])
+
+    @unittest.skipIf(ezdxf is None, "需要 ezdxf")
+    def test_structured_dxf_matches_calls_in_walls_mode(self) -> None:
+        dxf_path = os.path.join(self.tmp, "structured.dxf")
+        calls_path = os.path.join(self.tmp, "structured.calls.json")
+        code, payload = run_cli([self.full, "--mode", "walls", "--px-per-mm", str(PPM),
+                                 "--origin", ORIGIN, "--out-dxf", dxf_path,
+                                 "--out-calls", calls_path])
+        self.assertEqual(code, 0, payload)
+        self.assertEqual(payload["dxf_mode"], "structured")
         doc = ezdxf.readfile(dxf_path)
         layers = {entity.dxf.layer for entity in doc.modelspace()}
-        self.assertIn("A-WALL", layers)
-        self.assertIn("A-TRACE", layers)
+        self.assertTrue({"A-WALL", "A-TRACE"}.issubset(layers))
+        calls = json.load(open(calls_path, encoding="utf-8"))["calls"]
+        self.assertEqual(len(list(doc.modelspace())),
+                         len(calls) + payload.get("dxf_trace_lines", 0), payload)
+
+    def test_door_swing_inferred_from_arc(self) -> None:
+        """四扇门开向各不相同：从开启弧反推的合页点与开向要和原图一致。"""
+        spec = {"walls": [
+            {"id": "a", "from": [0, 6000], "to": [8000, 6000], "thickness": 240,
+             "openings": [{"kind": "door", "width": 900, "center": 4000,
+                           "hinge": "start", "swing": "positive"}]},
+            {"id": "b", "from": [0, 3000], "to": [8000, 3000], "thickness": 240,
+             "openings": [{"kind": "door", "width": 900, "center": 4000,
+                           "hinge": "end", "swing": "positive"}]},
+            {"id": "c", "from": [0, 1000], "to": [8000, 1000], "thickness": 240,
+             "openings": [{"kind": "door", "width": 900, "center": 4000,
+                           "hinge": "start", "swing": "negative"}]},
+            {"id": "d", "from": [9500, 0], "to": [9500, 7000], "thickness": 240,
+             "openings": [{"kind": "door", "width": 900, "center": 3500,
+                           "hinge": "end", "swing": "negative"}]},
+        ]}
+        calls = wall_plan.build_plan(spec, dict(LAYERS))["calls"]
+        image = render(calls, os.path.join(self.tmp, "four-doors.png"))
+        plan_path = os.path.join(self.tmp, "four-doors.json")
+        code, payload = run_cli([image, "--mode", "walls", "--px-per-mm", str(PPM),
+                                 "--origin", ORIGIN, "--out-plan", plan_path])
+        self.assertEqual(code, 0, payload)
+        self.assertEqual(payload["door_swings_confirmed"], 4, payload)
+        self.assertEqual(payload["door_swings_unconfirmed"], 0, payload)
+        found = json.load(open(plan_path, encoding="utf-8"))
+        truth = [door_geometry_mm(wall, op)
+                 for wall in spec["walls"] for op in wall["openings"]]
+        detected = [door_geometry_mm(wall, op)
+                    for wall in found["walls"] for op in wall["openings"]
+                    if op["kind"] == "door"]
+        self.assertEqual(len(detected), 4)
+        for hinge, direction in detected:
+            match = min(truth, key=lambda item: math.dist(item[0], hinge))
+            self.assertLess(math.dist(match[0], hinge), 120.0,
+                            "合页点偏差过大: %r vs %r" % (match[0], hinge))
+            self.assertAlmostEqual(match[1][0], direction[0], delta=0.2)
+            self.assertAlmostEqual(match[1][1], direction[1], delta=0.2)
+
+    def test_stairs_detected_from_parallel_treads(self) -> None:
+        """等间距平行踏步线 → stairs 规格（而不是一堆假墙）。"""
+        spec = {
+            "walls": [{"id": "wall", "from": [0, 6000], "to": [8000, 6000],
+                       "thickness": 240}],
+            "stairs": [{"origin": [2000, 2000], "angle": 90, "steps": 8,
+                        "tread": 260, "width": 1100}],
+        }
+        calls = wall_plan.build_plan(spec, dict(LAYERS))["calls"]
+        image = render(calls, os.path.join(self.tmp, "stairs.png"))
+        plan_path = os.path.join(self.tmp, "stairs.json")
+        code, payload = run_cli([image, "--mode", "walls", "--px-per-mm", str(PPM),
+                                 "--origin", ORIGIN, "--stairs", "--out-plan", plan_path])
+        self.assertEqual(code, 0, payload)
+        self.assertEqual(payload["stairs_detected"], 1, payload)
+        found = json.load(open(plan_path, encoding="utf-8"))
+        self.assertEqual(len(found["stairs"]), 1)
+        stair = found["stairs"][0]
+        self.assertEqual(stair["steps"], 8)
+        self.assertAlmostEqual(stair["tread"], 260, delta=15)
+        self.assertAlmostEqual(stair["width"], 1100, delta=30)
+        # 楼梯可以从任一端起画；比对"梯段中点"更稳
+        angle = math.radians(stair["angle"])
+        middle = (stair["origin"][0] + math.cos(angle) * stair["steps"] * stair["tread"] / 2,
+                  stair["origin"][1] + math.sin(angle) * stair["steps"] * stair["tread"] / 2)
+        self.assertLess(math.dist(middle, [2000, 3040]), 60)
 
 
 class HelperTests(unittest.TestCase):
@@ -288,6 +420,49 @@ class HelperTests(unittest.TestCase):
         self.assertAlmostEqual(walls[0]["thickness"], 240)
         self.assertEqual((walls[0]["start"], walls[0]["end"]), (0, 5000))
         self.assertIn(window_line, leftovers)
+
+
+@unittest.skipIf(cv2 is None or Image is None or np is None, "需要 OpenCV 与 Pillow")
+class OpeningEvidenceTests(unittest.TestCase):
+    def test_band_detects_gap_in_filled_wall(self) -> None:
+        image = np.full((300, 600), 255, dtype=np.uint8)
+        image[100:121, 50:451] = 200          # 灰色墙带
+        image[100:102, 50:451] = 60
+        image[119:121, 50:451] = 60
+        image[100:121, 250:321] = 255         # 70px 洞口
+        wall = {"orient": "H", "center": 110.0, "start": 50.0, "end": 450.0,
+                "thickness": 20.0, "openings": []}
+        found = itc.detect_band_openings([wall], image, min_width=40, max_width=120)
+        self.assertEqual(found, 1)
+        opening = wall["openings"][0]
+        self.assertAlmostEqual(opening["center"], 285, delta=4)
+        self.assertAlmostEqual(opening["width"], 70, delta=6)
+
+    def test_band_skips_line_drawing(self) -> None:
+        image = np.full((300, 600), 255, dtype=np.uint8)
+        image[100:102, 50:451] = 0
+        image[119:121, 50:451] = 0
+        wall = {"orient": "H", "center": 110.0, "start": 50.0, "end": 450.0,
+                "thickness": 20.0, "openings": []}
+        self.assertEqual(itc.detect_band_openings([wall], image, 40, 120), 0)
+        self.assertEqual(wall["openings"], [])
+
+    def test_swing_inference_tolerates_center_offset(self) -> None:
+        """墙中心线被家具/线宽带偏时，仍应从弧确认开向。"""
+        spec = {"walls": [{"from": [0, 3000], "to": [8000, 3000], "thickness": 240,
+                           "openings": [{"kind": "door", "width": 900, "center": 4000,
+                                         "hinge": "start", "swing": "positive"}]}]}
+        calls = wall_plan.build_plan(spec, dict(LAYERS))["calls"]
+        path = os.path.join(tempfile.mkdtemp(prefix="cad-offset-"), "door.png")
+        render(calls, path)
+        binary, _ = itc.load_binary(path, False, False, False)
+        wall = {"orient": "H", "center": 1040.0 + 8.0,   # 故意偏 8px
+                "start": 40.0, "end": 1640.0, "thickness": 48.0,
+                "openings": [{"kind": "door", "width": 180.0, "center": 840.0,
+                              "hinge": "start", "swing": "positive"}]}
+        stats = itc.infer_door_swings(binary, [wall], max_door_px=250)
+        self.assertEqual(stats["confirmed"], 1, stats)
+        self.assertEqual(wall["openings"][0]["swing"], "positive")
 
 
 if __name__ == "__main__":

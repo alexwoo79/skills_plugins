@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""把 CAD-MCP 调用序列编译成 AutoCAD 脚本（.scr），用于批量落图。
+"""把 CAD 调用序列编译成 AutoCAD 脚本（.scr），用于批量落图。
 
-逐条调用 MCP 工具 = 每个图元一次跨进程 COM 往返；同一个几何量级改成
+逐条调用绘图命令 = 每个图元一次跨进程 COM 往返；同一个几何量级改成
 一次 SCRIPT 执行，CAD 在进程内自己跑命令，快一个量级。
 
 输入：`wall_plan.py` 的输出（带 calls 的对象），或直接的 calls 数组。
@@ -13,8 +13,7 @@
 
 执行方式（Windows 侧）：
   1) 把 .scr 拷到装 CAD 的机器；
-  2) 在 CAD 里手动 `SCRIPT` 选文件，或经 MCP 调用
-     send_command("_.SCRIPT C:\\\\path\\\\plan.scr")。
+  2) `cad_direct.py script --file plan.scr`，或在 CAD 里手动 `SCRIPT` 选文件。
 
 未支持：draw_hatch（填充的交互式选择集无法可靠脚本化），会跳过并告警。
 """
@@ -88,7 +87,7 @@ def compile_call(call: Dict[str, Any], index: int, keep_spaces: bool,
     if not isinstance(args, dict):
         raise PlanError("%s.args 必须是对象" % where)
     if tool not in SUPPORTED:
-        warnings.append("%s: 跳过不支持的 %s（填充等请用 MCP 工具单独处理）" % (where, tool))
+        warnings.append("%s: 跳过不支持的 %s（填充请用 cad_direct.py draw 单独处理）" % (where, tool))
         return []
 
     if tool == "draw_line":
@@ -153,7 +152,7 @@ def compile_call(call: Dict[str, Any], index: int, keep_spaces: bool,
     end = _point(args.get("end_point"), where + ".end_point")
     text_position = args.get("text_position")
     if text_position is None:
-        # 与 CAD-MCP 的默认一致：放在中点上方 5
+        # 默认放在中点上方 5
         mid = ((start[0] + end[0]) / 2, (start[1] + end[1]) / 2 + 5)
     else:
         mid = _point(text_position, where + ".text_position")
@@ -231,7 +230,7 @@ def _extract_calls(payload: Any) -> List[Dict[str, Any]]:
 
 
 def main(argv: List[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="CAD-MCP 调用序列 → AutoCAD .scr 批量落图脚本")
+    parser = argparse.ArgumentParser(description="CAD 调用序列 → AutoCAD .scr 批量落图脚本")
     parser.add_argument("plan", help="调用序列 JSON 路径，或 - 表示 stdin")
     parser.add_argument("--out", default="plan.scr", help="输出 .scr 路径（默认 plan.scr）")
     parser.add_argument("--dimtxt", type=float, default=250.0,

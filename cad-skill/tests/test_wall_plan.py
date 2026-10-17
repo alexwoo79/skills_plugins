@@ -103,6 +103,87 @@ class CrossingWarningTests(unittest.TestCase):
         self.assertEqual(plan["warnings"], [])
 
 
+class DrawingExtrasTests(unittest.TestCase):
+    """轴网、自动尺寸、楼梯与待复核标记：都是可单独开关的附加 phase。"""
+
+    def _spec(self, **extra):
+        spec = {"walls": [
+            {"id": "S", "from": [0, 0], "to": [12000, 0], "thickness": 240},
+            {"id": "N", "from": [0, 8000], "to": [12000, 8000], "thickness": 240},
+            {"id": "W", "from": [0, 0], "to": [0, 8000], "thickness": 240},
+            {"id": "E", "from": [12000, 0], "to": [12000, 8000], "thickness": 240},
+        ]}
+        spec.update(extra)
+        return spec
+
+    def test_axis_auto_uses_wall_centrelines(self) -> None:
+        plan = build(self._spec(axis={"auto": True}))
+        grid = [call for call in plan["calls"] if call["args"].get("layer") == "A-GRID"]
+        lines = [call for call in grid if call["tool"] == "draw_line"]
+        labels = [call["args"]["text"] for call in grid if call["tool"] == "draw_text"]
+        self.assertEqual(len(lines), 4)  # x: 0/12000，y: 0/8000
+        self.assertEqual(sorted(labels), ["1", "2", "A", "B"])
+        vertical = [call for call in lines
+                    if call["args"]["start_point"][0] == call["args"]["end_point"][0]]
+        self.assertEqual(len(vertical), 2)
+        # 轴线要伸出墙外：默认 1500，墙外接框是 -120 ~ 8120
+        self.assertLess(min(call["args"]["start_point"][1] for call in vertical), -1500)
+        self.assertGreater(max(call["args"]["end_point"][1] for call in vertical), 9000)
+
+    def test_explicit_axis_labels(self) -> None:
+        plan = build(self._spec(axis={"x": [0, 6000, 12000], "y": [0, 8000],
+                                      "labels": {"x": ["A", "B", "C"], "y": ["X", "Y"]}}))
+        labels = [call["args"]["text"] for call in plan["calls"]
+                  if call["args"].get("layer") == "A-GRID" and call["tool"] == "draw_text"]
+        self.assertEqual(sorted(labels), ["A", "B", "C", "X", "Y"])
+
+    def test_dimensions_chain_plus_overall(self) -> None:
+        plan = build(self._spec(dims={"offset": 1200, "textheight": 250}))
+        dims = [call for call in plan["calls"] if call["tool"] == "add_dimension"]
+        self.assertEqual(len(dims), 4)  # 两个方向：各 1 段 + 1 道总尺寸
+        self.assertTrue(all(call["args"]["layer"] == "A-DIM" for call in dims))
+        self.assertTrue(all(call["args"]["textheight"] == 250 for call in dims))
+        self.assertAlmostEqual(min(call["args"]["text_position"][1] for call in dims), -2670.0)
+        self.assertAlmostEqual(min(call["args"]["text_position"][0] for call in dims), -2670.0)
+        segments = {(call["args"]["start_point"][0] - call["args"]["end_point"][0])
+                    for call in dims}
+        self.assertIn(-12000.0, {round(value, 3) for value in segments})
+
+    def test_stairs_emit_treads_arrow_and_label(self) -> None:
+        plan = build(self._spec(stairs=[{"origin": [2000, 2000], "angle": 90, "steps": 6,
+                                         "tread": 260, "width": 1100}]))
+        stairs = [call for call in plan["calls"] if call["args"].get("layer") == "A-STAR"]
+        self.assertEqual(len(stairs), 11)  # 7 条踏步线 + 走向线 + 2 条箭头 + 文字
+        self.assertEqual(sum(1 for call in stairs if call["tool"] == "draw_line"), 10)
+        self.assertEqual([call["args"]["text"] for call in stairs
+                          if call["tool"] == "draw_text"], ["楼梯"])
+
+    def test_review_marker_survives_to_summary(self) -> None:
+        spec = self._spec()
+        spec["walls"][0]["openings"] = [{"kind": "door", "width": 900, "center": 3000,
+                                         "needs_review": True,
+                                         "review_reason": "未找到开启弧"}]
+        plan = build(spec)
+        self.assertEqual(plan["summary"]["needs_review"], 1)
+        self.assertEqual(plan["review"][0]["reason"], "未找到开启弧")
+        self.assertEqual(plan["review"][0]["wall"], "S")
+
+    def test_meter_spec_scales_every_phase(self) -> None:
+        spec = {
+            "walls": [{"from": [0, 0], "to": [6, 0], "thickness": 0.24}],
+            "axis": {"x": [0, 6], "y": [0]},
+            "dims": {"offset": 1.2},
+            "stairs": [{"origin": [1, 1], "steps": 3, "tread": 0.26, "width": 1.1}],
+        }
+        plan = build(spec, scale=1000.0)
+        grid = [call for call in plan["calls"] if call["args"].get("layer") == "A-GRID"]
+        self.assertEqual(len(grid), 9)  # 2 条 x 轴 + 1 条 y 轴，每条 3 个图元
+        treads = [call for call in plan["calls"]
+                  if call["args"].get("layer") == "A-STAR" and call["tool"] == "draw_line"]
+        x_positions = [call["args"]["start_point"][0] for call in treads[:4]]
+        self.assertAlmostEqual(x_positions[1] - x_positions[0], 260.0, delta=0.01)
+
+
 class ValidationTests(unittest.TestCase):
     def test_opening_outside_wall_is_rejected(self) -> None:
         spec = {"walls": [{"from": [0, 0], "to": [5000, 0], "thickness": 240,

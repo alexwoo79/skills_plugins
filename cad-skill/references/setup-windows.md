@@ -1,114 +1,113 @@
-# 环境与接入（Windows + CAD-MCP）
+# 环境与接入（Windows + 直连 COM）
 
-CAD-MCP 依赖 Windows COM（pywin32）控制本机 CAD，只在 Windows 上运行。CAD 侧支持 AutoCAD、浩辰 CAD（GstarCAD / GCAD）、中望 CAD（ZWCAD）。
+`cad_direct.py` 通过 pywin32 直接驱动**本机正在运行的 CAD**。没有服务端进程，
+没有监听端口，也不需要注册任何客户端配置。
+
+支持 AutoCAD、浩辰 CAD（GstarCAD / GCAD）、中望 CAD（ZWCAD）。
 
 ## 前置条件
 
-- Windows 系统
-- 已安装并激活其中一款 CAD（AutoCAD / GstarCAD / ZWCAD）
-- Python 3.10+
-- Codex CLI（或支持同一份 `config.toml` 的 Codex 客户端）
-
-两种装法：**A. 只装 skill，直接调用**（不需要 MCP 服务端与 `config.toml`，
-见 `references/direct-cli.md`）；**B. skill + MCP 服务端**（本节余下内容）。
-
-## 安装 CAD-MCP（用本地副本，不要联网拉代码）
-
-服务端源码就在本仓库的 `cad-mcp/`（与 `cad-skill/` 同级），是 CAD-MCP v2.0 的本地副本，
-已包含图层缓存优化（见 `cad-mcp/PATCHES.md`）。部署方式是把整个 `cad-mcp/` 目录拷到 Windows 机器：
+- Windows 10/11，CAD 与 Codex 在**同一台机器、同一个交互式桌面会话**里。
+- 已安装并激活其中一款 CAD。
+- Python 3.10+，并在**准备运行脚本的那个解释器**里装好依赖。
 
 ```powershell
-# 在目标机器的 cad-mcp 目录里
-pip install -r requirements.txt      # 只装依赖，不取代码
+python -m pip install pywin32 Pillow
 ```
 
-依赖（`mcp`、`pywin32`、`pydantic`、`Pillow`）需要从 PyPI 装一次。目标机器完全离线时，
-先在有网的机器上备好轮子再拷过去：
+`Pillow` 只在截图（`shot`）时需要；描图脚本另外需要
+`opencv-python-headless` 与 `ezdxf`（可以装在另一台机器上）。
+
+## 安装 skill
+
+把整个 `cad-skill/` 目录拷到目标机器（例如 `C:\codex\skills\cad-skill`），保持结构：
+
+```text
+cad-skill\
+  SKILL.md
+  scripts\cad_direct.py
+  scripts\wall_plan.py
+  scripts\plan_render.py
+  vendor\cad_core.py
+  references\
+  assets\
+```
+
+`cad_direct.py` 用相对路径找 `vendor/cad_core.py` 和 `cad_output/`，不要只拷单个脚本。
+
+## 选择 CAD 类型
+
+默认 `AUTOCAD`。浩辰 / 中望用全局参数或环境变量覆盖：
 
 ```powershell
-pip download -r requirements.txt -d wheels      # 有网的机器
-pip install --no-index --find-links wheels -r requirements.txt   # 离线机器
+$env:CAD_TYPE = "ZWCAD"          # AUTOCAD / GCAD / GSTARCAD / ZWCAD
+$env:CAD_STARTUP_WAIT = "20"     # 冷启动等待秒数
+$env:CAD_COMMAND_DELAY = "0.5"   # 命令间隔（CAD 慢就调大）
+$env:CAD_OUTPUT_DIR = "D:\cad-out"
 ```
 
-装成 CLI（可选）：
+也可以每次显式传：
 
-```bash
-pip install -e .
-cad-mcp
+```powershell
+python C:\codex\skills\cad-skill\scripts\cad_direct.py --cad-type GCAD stats
 ```
 
-不要用 GitHub 上的上游代码覆盖 `cad-mcp/`：本地改动集中在 `src/cad_controller.py`，
-差异补丁在 `cad-mcp/patches/0001-layer-cache.patch`。
+`GCAD` 与 `GSTARCAD` 等价，都会依次尝试 `GCAD.Application`、`GstarCAD.Application`。
 
-## 配置 `src/config.json`
+## 首次自测
+
+按顺序来，不要一上来画整套住宅：
+
+```powershell
+cd C:\codex\skills\cad-skill
+
+# 1) 连上 CAD（没运行会自动拉起）；确认文档名与图元数
+python scripts\cad_direct.py stats
+
+# 2) 画一条 5000 长的线，确认返回句柄
+python scripts\cad_direct.py draw --calls line.json
+
+# 3) 截图，确认视觉结果
+python scripts\cad_direct.py shot --out check.png
+
+# 4) 存 DWG（绝对路径）
+python scripts\cad_direct.py save --path D:\out\test.dwg
+```
+
+`line.json` 最小内容：
 
 ```json
-{
-  "server": { "name": "CAD MCP 服务器", "version": "2.0.0", "transport": "stdio", "host": "127.0.0.1", "port": 8000 },
-  "cad": { "type": "AUTOCAD", "startup_wait_time": 20, "command_delay": 0.5 },
-  "output": { "directory": "./output", "default_filename": "cad_drawing.dwg" }
-}
+{"calls": [{"tool": "draw_line",
+  "args": {"start_point": [0, 0], "end_point": [5000, 0], "layer": "A-WALL"}}]}
 ```
 
-- `cad.type`：`AUTOCAD` / `GCAD` / `GstarCAD` / `ZWCAD`，必须与机器上实际安装的软件一致。
-- `startup_wait_time`：CAD 冷启动等待秒数，机器慢就调大。
-- `command_delay`：每条命令之间的间隔，CAD 较慢时调大。
-- `transport`：默认 `stdio`（本地单客户端）；改成 `streamable-http` 可多客户端共享同一个 CAD 实例（`http://127.0.0.1:8000/mcp`）。
+再验证图层与整批脚本：
 
-## 接入 Codex
-
-```bash
-codex mcp add cad -- python C:\path\to\CAD-MCP\src\server.py
+```powershell
+python scripts\cad_direct.py layers
+python scripts\cad_direct.py script --file plan.scr
 ```
-
-或直接编辑 `C:\Users\<用户名>\.codex\config.toml`：
-
-```toml
-[mcp_servers.cad]
-command = "C:\\Path\\To\\python.exe"
-args = ["C:\\Path\\To\\CAD-MCP\\src\\server.py"]
-enabled = true
-```
-
-要点：
-
-- 路径写机器上的真实路径，并优先写 **Python 解释器的绝对路径**——Codex 启动子进程时环境可能被清空，`python` 不一定指向装了依赖的那个解释器。
-- 确认 `src/config.json` 里的 CAD 类型正确。
-- 验证：
-
-  ```bash
-  codex mcp list
-  ```
-
-  能看到 cad 服务，并能在会话里调用 `draw_line` 等工具，即接入成功。
-
-## 自测（可选）
-
-```bash
-python src/server.py                 # 直接跑，观察日志
-npx -y @modelcontextprotocol/inspector python C:\path\to\CAD-MCP\src\server.py
-```
-
-日志位置：源码目录 `src/cad_mcp.log`，无写权限时回退到 `~/.cad-mcp/cad_mcp.log`（滚动文件，单文件 5MB、保留 2 份）。
-
-接入后按顺序验证，不要一上来画整套住宅：
-
-1. 一条 5000 长的线：`draw_line` `[0,0]` → `[5000,0]`。
-2. 一个 5000 × 4000 矩形（不含文字尺寸）。
-3. 带 `layer="A-WALL"` 再画一次，然后用 `list_layers` 确认图层出现。
-4. `screenshot` 看 CAD 窗口，确认视觉结果。
 
 ## 排障
 
 | 现象 | 处理 |
 | --- | --- |
-| `success=false`，CAD 未运行 | 首次调用会自动启动，等 20s 左右；仍失败就手动打开 CAD 再重试 |
-| COM 报错 / `pywin32` 相关异常 | 确认在 Windows 上、用装好依赖的那个 Python、`pip install -r requirements.txt` 完整执行 |
-| 中文版 CAD 命令不识别 | `send_command` 用 `_.` 前缀写英文命令，例如 `_.ZOOM E` |
-| 保存失败：文件被占用 | 关掉 CAD 里已打开的同名图纸，或换路径/文件名 |
-| 图层没生效 | 检查 `layer` 参数拼写；传 `layer` 会自动建层，`0` 层说明没传或传空 |
-| MCP 里看不到工具 | `codex mcp list` 确认服务在、`enabled = true`、Python 与脚本路径正确 |
+| `无法导入 win32com` / `pywin32` 异常 | 用实际运行脚本的那个 Python 执行 `python -m pip install pywin32` |
+| 连不上或启动不了 CAD | 先手动打开 CAD 并完成激活/登录；确认 `--cad-type` 与安装的软件一致 |
+| 能找到实例但命令被拒 | CAD 正在弹窗/执行命令/重生成；关掉弹窗再试，`cad_core` 会自动重试瞬态拒绝 |
+| 截图是黑的 / 失败 | 在交互式桌面会话里运行（锁屏、断开的 RDP、服务会话都不行）；确认装了 Pillow |
+| 中文版 CAD 不认命令 | `send --command "_.ZOOM E"` 这种 `_.` 前缀写英文命令 |
+| 保存失败：文件被占用 | 关掉 CAD 里已打开的同名图纸，或换路径 |
+| 图层没生效 | 检查 `layer` 拼写；不传就是当前层（常见是 `0` 层） |
+| `draw` 输出 `ok=false` | 看 `results[*].error`；先 `--dry-run` 排除参数问题 |
 
 ## 非 Windows 环境
 
-macOS / Linux 上无法运行 CAD-MCP（没有 COM）。此时不要假装能画图：改为交付**布局方案 + 坐标表 + 构件画法说明**，或生成 AutoCAD 可直接执行的脚本/命令清单，由用户在 Windows 侧落图。
+COM 只在 Windows 上可用。macOS / Linux 上仍可运行：
+
+- `scripts/plan_render.py`：产出 DXF / SVG / `.scr`；
+- `scripts/image_to_calls.py`、`image_to_walls.py`、`image_to_vector.py`：矢量化；
+- `scripts/wall_plan.py`：几何换算。
+
+但不能连 CAD。此时交付**布局方案 + 坐标表 + DXF/SVG**，由 Windows 侧打开或执行脚本落图；
+不要描述成“已经画好”。
