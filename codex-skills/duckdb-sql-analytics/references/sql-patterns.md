@@ -300,3 +300,66 @@ SELECT list_distinct([1,2,2,3])        AS d,   -- [1, 2, 3]
 ```
 
 速查：`split_part` 取段、`str_split` 转数组、`unnest` 炸行、`concat_ws` 拼串、`string_agg` 分组拼串、`list()` 收数组。
+
+## 16. 时间轴、滚动窗口与同期比较
+
+先把明细聚合成唯一时间粒度，再补完整日期轴：
+
+```sql
+WITH bounds AS (
+    SELECT min(dt)::DATE AS start_date, max(dt)::DATE AS end_date
+    FROM t
+),
+calendar AS (
+    SELECT ts::DATE AS date_key
+    FROM bounds,
+    LATERAL range(start_date, end_date + INTERVAL 1 DAY, INTERVAL 1 DAY) AS r(ts)
+),
+observed AS (
+    SELECT dt::DATE AS date_key, sum(amount) AS amount
+    FROM t
+    GROUP BY ALL
+)
+SELECT c.date_key, COALESCE(o.amount, 0) AS amount
+FROM calendar AS c
+LEFT JOIN observed AS o USING (date_key);
+```
+
+完整日期轴上，`ROWS BETWEEN 6 PRECEDING AND CURRENT ROW` 才是 7 天；同时输出 `COUNT(*) OVER (...)`，避免把启动阶段的不完整窗口误当成完整 7 天。
+
+月序列缺月时不要用 `LAG(..., 12)` 猜“去年同月”。先补月日期轴，再按日期键精确连接：
+
+```sql
+SELECT
+    cur.month_key,
+    cur.sales,
+    prev.sales AS previous_month_sales,
+    last_year.sales AS same_month_last_year_sales,
+    cur.sales - prev.sales AS mom_diff,
+    cur.sales - last_year.sales AS yoy_diff,
+    CASE WHEN prev.sales > 0 THEN
+        ROUND(100.0 * CAST(cur.sales AS DOUBLE) / CAST(prev.sales AS DOUBLE) - 100.0, 2)
+    END AS mom_pct,
+    CASE WHEN last_year.sales > 0 THEN
+        ROUND(100.0 * CAST(cur.sales AS DOUBLE) / CAST(last_year.sales AS DOUBLE) - 100.0, 2)
+    END AS yoy_pct
+FROM monthly_complete AS cur
+LEFT JOIN monthly_complete AS prev
+    ON prev.month_key = cur.month_key - INTERVAL 1 MONTH
+LEFT JOIN monthly_complete AS last_year
+    ON last_year.month_key = cur.month_key - INTERVAL 1 YEAR
+ORDER BY cur.month_key;
+```
+
+分区比较时，连接条件同时写 `region` 和日期键。日同比同理用 `current.date_key - INTERVAL 7 DAY`，不要假设 7 行一定等于 7 天。
+
+比较最近 28 天与前 28 天时，以数据最大日期锚定两个等长窗口：
+
+```sql
+CASE
+    WHEN date_key > max_date - INTERVAL 28 DAY THEN 'current_28d'
+    WHEN date_key > max_date - INTERVAL 56 DAY THEN 'previous_28d'
+END AS period
+```
+
+当前月/年尚未结束时，要标记 `period_complete = false`，或把基期截到与本期相同的截止日；不能拿“本月到 10 日”直接除以上月整月。无业务记录和提取缺失都体现为缺失日期时，`coverage_pct` 只能作为诊断，不能单独证明源数据完整。

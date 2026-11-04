@@ -25,6 +25,7 @@ contact the author first: [@alexwoo79](https://github.com/alexwoo79).**
 | --- | --- |
 | `data-clean/` | Declarative data cleaning through the local `dataflow-mcp` binary (profile → plan → pipeline → export) |
 | `data-workflow/` | Parse, validate and build dataflow-studio workflow JSON, backed by real data profiles |
+| `duckdb-sql-analytics/` | SQL-only DuckDB analytics, including typed ingestion, data-quality audits, complete time axes, rolling/period metrics, exact YoY/MoM comparisons, seasonality, anomalies and baseline forecasts |
 | `markdown-ppt/` | Markdown → PPTX/SVG/HTML/Reveal.js/Word decks via the `markdown-ppt` CLI |
 | `omarchy-proxyctl/` | Manage the system proxy on Omarchy/Hyprland with `proxyctl`: inspect, verify an endpoint, on/off/restore, address discovery, TUN, troubleshooting |
 | `print-sheet/` | Typeset Markdown, source code or text files into a printable A4 sheet (HTML + PDF + per-page PNG preview), optionally sent straight to a CUPS printer |

@@ -97,15 +97,17 @@ SELECT library_version FROM pragma_version();   -- v2.0.0 → 直接 LOAD 即可
 
 当任务包含日期/时间字段，并要求趋势、日周月聚合、缺口补齐、移动平均、同比环比、季节性、异常或预测时：
 
-1. 先阅读 [references/time-series-analysis.md](references/time-series-analysis.md)，确定事件时间、分析粒度、填充语义和完整时间边界。
-2. 使用 [scripts/time-series-analysis.sql](scripts/time-series-analysis.sql) 作为可执行起点。脚本自带 [assets/sales_blueprint_sample.csv](assets/sales_blueprint_sample.csv)，从 skill 目录运行：
+1. 先阅读 [references/time-series-analysis.md](references/time-series-analysis.md)，明确事件时间、时区、分析粒度、期间定义、填充语义和完整时间边界。不要用入库时间冒充业务发生时间。
+2. 先做时间覆盖体检：最小/最大时间、重复键、缺失日期/月份、边界期间是否不完整，以及明细能否聚合到唯一分析粒度。
+3. 使用 [scripts/time-series-analysis.sql](scripts/time-series-analysis.sql) 作为可执行起点。脚本自带 [assets/sales_blueprint_sample.csv](assets/sales_blueprint_sample.csv)，从 skill 目录运行：
 
    ```bash
    duckdb :memory: -f scripts/time-series-analysis.sql
    ```
 
-3. 对用户自己的文件，通过 `DUCKDB_TS_SAMPLE` 指定路径并检查列名映射；不要假设日期连续、时区一致或比率缺失值应补 0。
-4. 分析结果必须说明窗口（是否包含当前行）、时间范围、缺失值处理和基线；预测默认只能称为“基线”，除非已经完成时间外回测。
+4. 对用户自己的文件，通过 `DUCKDB_TS_SAMPLE` 指定路径并检查列名映射；不要假设日期连续、时区一致或比率缺失值应补 0。
+5. 同比/环比优先用日期键做精确偏移连接；只有确认时间轴连续时才用 `LAG(..., 1/12)`。当前月/年尚不完整时，不得直接与完整期间比较。
+6. 分析结果必须说明窗口（是否包含当前行）、时间范围、期间完整度、缺失值处理和基线；预测默认只能称为“基线”，除非已经完成时间外回测。
 
 也可用环境变量指定输入文件：
 
@@ -123,9 +125,9 @@ DUCKDB_TS_SAMPLE=/absolute/path/data.csv \
 
 ## 常用套路索引
 
-`references/sql-patterns.md` 收录可直接复用的片段：类型化入库、质量体检、占比与累计占比、ABC 分层、分区 TopN、`arg_max`、手写 PIVOT + ROLLUP、文本日期抽取、`COPY` 导出、Excel 混类型列导入（第 13 节）、分列与炸行（第 14 节）、合并（第 15 节），以及 DuckDB 特有的坑（数字开头的列名、`100.0 * DECIMAL` 精度、`FILTER` 与 `NULL` 的交互）。
+`references/sql-patterns.md` 收录可直接复用的片段：类型化入库、质量体检、占比与累计占比、ABC 分层、分区 TopN、`arg_max`、手写 PIVOT + ROLLUP、文本日期抽取、`COPY` 导出、Excel 混类型列导入（第 13 节）、分列与炸行（第 14 节）、合并（第 15 节）、时间轴与精确同期比较（第 16 节），以及 DuckDB 特有的坑（数字开头的列名、`100.0 * DECIMAL` 精度、`FILTER` 与 `NULL` 的交互）。
 
-`references/time-series-analysis.md` 收录销售样本上的完整时间序列方法；`scripts/time-series-analysis.sql` 生成原始、日、区域补全、月、季节性、异常和三个月预测视图，可直接运行或按业务表改名。
+`references/time-series-analysis.md` 收录时间口径、完整日历、滚动/累计、MTD/QTD/YTD、同日/同月精确对比、期间完整度、季节性和预测回测；`scripts/time-series-analysis.sql` 生成数据覆盖审计、原始/日/周/区域补全、完整月日期轴、精确环比同比、季节性、异常和三个月基线预测视图，可直接运行或按业务表改名。
 
 ## 坑位备忘
 
@@ -137,3 +139,7 @@ DUCKDB_TS_SAMPLE=/absolute/path/data.csv \
 - 单引号是字符串字面量：`SELECT sum('合计应收')` 求的是常量，`sum("合计应收")` 才是列；同理 `FROM` 必须写在 `GROUP BY` 之前。
 - `read_xlsx` 靠嗅探定列类型，一列多数是数字、少数是备注时报 `Could not convert string '...' to DOUBLE`；改用 `all_varchar = true` + `TRY_CAST`（详见模式库第 13 节）。
 - `read_csv` 的 `all_varchar = true` 之后忘记 `TRY_CAST`，会让 `SUM` 变成字符串拼接或直接报错。
+- `LAG(x, 12) OVER (ORDER BY month)` 数的是前 12 行，不保证是去年同月；缺月时先用完整月日期轴，再按 `month_key - INTERVAL 1 MONTH/YEAR` 精确连接。
+- `ROWS BETWEEN 6 PRECEDING` 数的是 6 行，不保证是 6 天；只有完整日日期轴才能把“行”解释成“天”，否则改用时间桶或明确的时间范围窗口。
+- 当前月、当前周和当天通常是不完整期间。与上一期间比较前，要么排除不完整边界，要么截取等长日期范围，并输出 `period_complete` / `coverage_pct`。
+- 时间戳含时区时先统一到业务时区再截日、截月；直接用 UTC 日期分桶可能把本地订单划入错误日期。
