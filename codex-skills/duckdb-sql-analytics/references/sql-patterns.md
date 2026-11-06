@@ -176,7 +176,8 @@ COPY (SELECT * FROM t) TO 'out/t.parquet'  (FORMAT PARQUET, COMPRESSION ZSTD);
 ```
 
 ```bash
-./runtime/duckdb.exe analysis/ar.duckdb -f analysis/run_all.sql
+./runtime/duckdb analysis/ar.duckdb -f analysis/run_all.sql
+# Windows: .\runtime\duckdb.exe analysis\ar.duckdb -f analysis\run_all.sql
 ```
 
 `.read` 是 DuckDB CLI 指令，可出现在被 `-f` 执行的文件里；这不是外部脚本。
