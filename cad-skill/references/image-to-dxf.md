@@ -26,10 +26,76 @@ python3 scripts/image_to_calls.py plan.png --mode walls --px-per-mm 0.16686 \
 
 `--out-dxf` 之外还可以加 `--preview check.png` 生成叠加预览（绿=骨架线，红=实心轮廓，蓝=OCR 框）。
 
-## 预处理：去背景网格 + 共线/端点吸附
+## 扫描件：contour 后端
+
+扫描件、粗线、实心墙用 `--tracer contour`：它直接描墨迹边界，不像 hybrid 那样先细化成
+1px 骨架，因此对粗线和扫描噪声通常更稳。
+
+```bash
+python3 scripts/image_to_calls.py scan.jpg --tracer contour \
+    --calibrate "x1,y1 x2,y2" --real 16200 \
+    --out-dxf scan.dxf --preview scan-check.png
+```
+
+- 输出：`A-TRACE` 闭合 `LWPOLYLINE`；`--ocr-text` 的文字进 `A-TEXT`；`--note "..."`
+  在 `REFERENCE` 层写一条说明。
+- 标定：`--px-per-mm` 是**像素/毫米**；`--calibrate` 内部按 `像素距离 / 真实毫米` 计算。
+  未标定时输出像素且 `$INSUNITS=0`，不要当毫米。
+- 参数：`--scan-threshold`（默认 190，0=Otsu）、`--scan-blur median|gaussian|none`、
+  `--scan-invert`（白线黑底）、`--scan-epsilon`（默认 0.75px）、
+  `--scan-min-area`（默认 2.2px²）、`--scan-max-side`（默认 0，保持原图）。
+- 文字：默认保留为轮廓；`--ocr-text` 可转可编辑文字并移除原笔画，
+  `--keep-text-strokes` 可保留原笔画。
+- 局限：描的是边界，细线可能出现双线/端帽；要中心线、墙体或门窗结构时仍用
+  `--tracer hybrid` / `--mode walls`。它不产生 `plan.json` / `calls.json`。
+
+`tests/test_contour_trace.py` 用 1660px = 16200mm 的合成图做回归，验证标定、单位、
+缩放画布、原点和预览。
+
+## 扫描 DXF → 建筑语义整理
+
+`semantic_floorplan.py` 在 `contour` DXF 上做**第一层语义整理**，不重新识别整套
+门窗。它从原图提取厚墨迹墙带，保留扫描 DXF 的其余线work，并用 OCR 替换文字：
+
+```bash
+python3 scripts/semantic_floorplan.py scan.jpg \
+    --source-dxf scan.dxf --px-per-mm 0.102469 \
+    --out-dxf semantic.dxf --preview semantic-check.png \
+    --ocr-langs eng --ocr-psm 3,6,11
+```
+
+输出图层：
+
+| 图层 | 内容 |
+| --- | --- |
+| `A-WALL` + `A-HATCH` | 厚墨迹墙带：闭合轮廓 + 实心填充 |
+| `A-TEXT` | OCR 房间名，中文 + 英文两行；默认 `TZ_HZ` |
+| `A-DIM` | 上/下/左/右尺寸带 OCR 数字 + 外圈尺寸线 |
+| `A-TRACE` | 门弧、窗线、家具、洁具等尚未分类的线work，需人工复核 |
+
+要点：
+
+- 墙带靠“厚度 + 灰度”提取，不靠平行线配对；适合实心墙/营销图，不保证把薄隔墙
+  全部并入 `A-WALL`。
+- OCR 默认 `eng`；图上有中文时可装 `chi_sim` 并传 `--ocr-langs eng+chi_sim`。
+  英文房间名会映射成中文（Master Bedroom→主卧、Guest Bathroom→次卫等）。
+- OCR 漏掉的标签可用 `--label-hints hints.json` 按像素位置补：
+  `{"labels":[{"zh":"客厅","en":"Living Room","cx":1150,"cy":1188}]}`。
+  统计里的 `room_labels_from_hints` / `dimension_texts_from_strips` 会说明来源。
+- 门窗还没有逐件分类，统一留在 `A-TRACE`；`REFERENCE` 层会写明“需复核”。
+  不要把这些线work当成已确认的门窗构件。
+- 需要先把门窗候选分层时，给 `--opening-hints openings.json`：
+  `{"openings":[{"type":"door","label":"主卫门","rect":[250,690,390,820]}]}`。
+  落在框内的线work进 `A-DOOR/A-WINDOW`，其余进 `A-FURN`；预览会画出框，
+  仍要逐项对照原图确认，尤其是虚线的门弧。
+
+## 预处理：去背景网格 + 共线/端点吸附（hybrid/hough）
 
 两个步骤都默认关闭，原因是“保真”优先：真实图纸里的轴网、等距墙线也可能长得像背景网格。
 确认图上有方格纸/瓷砖底纹，或 DXF 里碎线、断头明显时再打开：
+
+`--tracer contour` 目前不经过这两步；扫描件的底纹/阴影建议先用图像工具遮掉，或改用
+hybrid/hough 的 `--clean-geometry` 做对照。
 
 ```bash
 # 一步启用两项
@@ -93,6 +159,8 @@ python3 scripts/dxf_overlay_compare.py scan.png before.dxf after.dxf \
 | 同上（默认） | `A-SOLID` + `A-HATCH` | 填充的墙/柱：闭合轮廓 + 实心填充，不压中线 |
 | 同上 + `--all-skeleton` | `A-SKETCH` | 强制全部走单线，不保留填充块 |
 | 同上 + `--ocr-text` | `A-TEXT` | OCR 文本，默认中文优先 |
+| `--tracer contour` | `A-TRACE` | 扫描件墨迹边界：闭合多段线；`--ocr-text` 另进 `A-TEXT` |
+| `semantic_floorplan.py` | `A-WALL/A-HATCH/A-TEXT/A-DIM/A-TRACE` | 扫描 DXF 的墙、文字、尺寸、线work分层 |
 | `--tracer hough` | `A-TRACE` | 旧版 Hough 直段（只保留直线，曲线会碎） |
 | `--mode walls` | `A-WALL` `A-DOOR` `A-WINDOW` `A-TRACE` | 结构化墙体/门窗 + 未配对线work |
 
@@ -101,12 +169,13 @@ python3 scripts/dxf_overlay_compare.py scan.png before.dxf after.dxf \
 | 场景 | 用 |
 | --- | --- |
 | 只要一张看得过去的 DXF | 默认（`lines` + `hybrid`） |
+| 扫描件/粗线/实心轮廓，想尽量保真 | `--tracer contour` |
 | 要文字可编辑 | 默认 + `--ocr-text` |
 | 要墙体中心线、洞口、门开向 | `--mode walls` |
 | 只想要直线段、不要骨架 | `--tracer hough` |
 | 实心 logo/图标 | `scripts/image_to_vector.py` |
 
-`--mode lines` + `hybrid` 不产生 `plan.json` / `calls.json`；需要结构化输出时用
+`--mode lines` + `hybrid` / `contour` 不产生 `plan.json` / `calls.json`；需要结构化输出时用
 `--mode walls`（或 `--tracer hough`）。
 
 ## 标定：有尺寸链时按尺寸链

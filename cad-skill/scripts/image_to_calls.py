@@ -5,6 +5,10 @@
   所有墨迹走 1px 骨架，一条笔画输出一条多段线；不推断墙体、不删图源元素。
   --ocr-text 生成 A-TEXT；--solid-contours 才把粗区域走外轮廓。
 
+扫描件（--mode lines --tracer contour）：
+  按墨迹边界描闭合多段线，适合粗线/实心墙扫描件；文字默认保留为轮廓，
+  --ocr-text 可转 A-TEXT。它不输出中心线，需要墙体结构时仍用 walls 模式。
+
 结构化（--mode walls）：
   平行线配对成墙，识别洞口与门开向，输出 plan.json / calls.json / 结构化 DXF。
 
@@ -15,6 +19,8 @@
 
 例：
   python3 image_to_calls.py plan.png --out-dxf plan.dxf
+  python3 image_to_calls.py scan.png --tracer contour --px-per-mm 0.102469 \
+      --out-dxf scan.dxf --preview scan-check.png
   python3 image_to_calls.py plan.png --px-per-mm 0.16686 --ocr-text --out-dxf plan.dxf
   python3 image_to_calls.py plan.png --clean-geometry --out-dxf plan.clean.dxf
   python3 image_to_calls.py plan.png --mode walls --px-per-mm 0.16686 \
@@ -878,16 +884,18 @@ def resolve_scale(args) -> Optional[float]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="线稿栅格图 → 忠实描线 DXF（默认）/ 墙体与洞口调用序列（--mode walls）",
+        description="栅格图 → 忠实描线 DXF（hybrid/contour）/ 墙体与洞口调用序列（--mode walls）",
         epilog="hybrid 默认使用 --max-side/--simplify/--solid-*/OCR/--scale/--paper-height；"
-               "--remove-grid/--snap-geometry/--clean-geometry 对两个后端都生效；"
+               "contour 使用 --scan-threshold/--scan-blur/--scan-epsilon/--scan-min-area/--scan-max-side；"
+               "--remove-grid/--snap-geometry/--clean-geometry 对 hybrid/hough 生效；"
                "墙/洞口与纠偏参数用于 --mode walls 或 --tracer hough。")
     parser.add_argument("image")
     parser.add_argument("--mode", choices=("walls", "lines"), default="lines",
                         help="lines（默认）= 忠实描线，保留所有检测到的线段；"
                              "walls = 额外做墙体/洞口结构化提取")
-    parser.add_argument("--tracer", choices=("hybrid", "hough"), default="hybrid",
-                        help="lines 模式的后端：hybrid（默认，骨架+轮廓+可选 OCR）或 hough（旧线段）")
+    parser.add_argument("--tracer", choices=("hybrid", "hough", "contour"), default="hybrid",
+                        help="lines 模式的后端：hybrid（默认，骨架+轮廓+可选 OCR）、"
+                             "contour（扫描件墨迹边界→闭合多段线）或 hough（旧线段）")
     parser.add_argument("--max-side", type=int, default=2048,
                         help="hybrid 工作画布长边（默认 2048；0=原图）")
     parser.add_argument("--solid-px", type=float, default=16.0,
@@ -897,15 +905,29 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--simplify", type=float, default=1.2,
                         help="hybrid：多段线简化容差（像素）")
     parser.add_argument("--ocr-text", action="store_true",
-                        help="hybrid：OCR 文字写成 A-TEXT（并移除原文字笔画）")
+                        help="hybrid/contour：OCR 文字写成 A-TEXT（并移除原文字笔画）")
     parser.add_argument("--keep-text-strokes", action="store_true",
-                        help="hybrid + OCR：保留原文字笔画")
+                        help="hybrid/contour + OCR：保留原文字笔画")
     parser.add_argument("--ocr-langs", default="zh-Hans,en-US",
-                        help="hybrid OCR 语言（逗号分隔）")
+                        help="hybrid/contour OCR 语言（逗号分隔）")
     parser.add_argument("--scale", type=float, default=100.0,
-                        help="hybrid：出图比例分母（默认 100，即 1:100）")
+                        help="hybrid/contour：出图比例分母（默认 100，即 1:100）")
     parser.add_argument("--paper-height", type=float, default=3.5,
-                        help="hybrid：纸面文字高度 mm（默认 3.5）")
+                        help="hybrid/contour：纸面文字高度 mm（默认 3.5）")
+    parser.add_argument("--scan-threshold", type=int, default=190,
+                        help="contour：固定灰度阈值（默认 190；0=Otsu 自动阈值）")
+    parser.add_argument("--scan-blur", choices=("median", "gaussian", "none"),
+                        default="median",
+                        help="contour：模糊方式（默认 median=3x3 中值）")
+    parser.add_argument("--scan-invert", action="store_true",
+                        help="contour：白线黑底时反相（默认黑线白底）")
+    parser.add_argument("--scan-epsilon", type=float, default=0.75,
+                        help="contour：approxPolyDP 简化容差，像素（默认 0.75）")
+    parser.add_argument("--scan-min-area", type=float, default=2.2,
+                        help="contour：丢弃小于该面积的轮廓，像素²（默认 2.2）")
+    parser.add_argument("--scan-max-side", type=int, default=0,
+                        help="contour：工作画布长边（默认 0=原图；缩小会自动折算标定）")
+    parser.add_argument("--note", help="contour：在 REFERENCE 层写一条说明文字")
     parser.add_argument("--px-per-mm", type=float, help="像素/毫米（标定方式一）")
     parser.add_argument("--calibrate", help='两个像素点 "x1,y1 x2,y2"（标定方式二）')
     parser.add_argument("--real", type=float, help="上述两点的真实距离（毫米）")
@@ -1019,6 +1041,45 @@ def main(argv=None) -> int:
             print()
             return EXIT_FAILURE
         result.update({"mode": "lines", "tracer": "hybrid", "dxf_mode": "trace"})
+        json.dump(result, sys.stdout, ensure_ascii=False,
+                  indent=2 if args.pretty else None)
+        print()
+        return EXIT_OK
+
+    if args.mode == "lines" and args.tracer == "contour":
+        if args.out_plan or args.out_calls or args.stairs:
+            json.dump({"ok": False,
+                       "error": "contour 是扫描件保真描边后端，不产生 plan/calls/stairs；"
+                                "要结构化输出请用 --mode walls"},
+                      sys.stdout, ensure_ascii=False)
+            print()
+            return EXIT_USAGE
+        import contour_trace
+        try:
+            result = contour_trace.trace(
+                args.image,
+                threshold=args.scan_threshold,
+                blur=args.scan_blur,
+                invert=args.scan_invert,
+                epsilon=args.scan_epsilon,
+                min_area=args.scan_min_area,
+                max_side=args.scan_max_side,
+                ocr=args.ocr_text,
+                keep_text_strokes=args.keep_text_strokes,
+                languages=tuple(args.ocr_langs.split(",")),
+                scale=args.scale,
+                paper_text_height=args.paper_height,
+                px_per_mm=scale if calibrated else None,
+                origin=args.origin,
+                note=args.note,
+                out_dxf=args.out_dxf,
+                overlay=args.preview)
+        except RuntimeError as exc:
+            json.dump({"ok": False, "error": str(exc),
+                       "ocr_hint": contour_trace.ocr_install_hint()},
+                      sys.stdout, ensure_ascii=False)
+            print()
+            return EXIT_FAILURE
         json.dump(result, sys.stdout, ensure_ascii=False,
                   indent=2 if args.pretty else None)
         print()

@@ -6,20 +6,23 @@
 > 怎么用、参数怎么调、输出什么图层、出错怎么办：见 `references/image-to-dxf.md`。
 > 本文只讲算法与实测数据。
 
-两条路线，先分清图是什么：
+先分清图是什么：
 
 | 图是什么 | 用哪个脚本 | 出什么 |
 | --- | --- | --- |
 | 双线线稿（CAD 导出） | `image_to_calls.py` | 默认单线 DXF（A-SKETCH/A-TEXT）；`--mode walls` 才出 plan.json/洞口 |
+| 扫描件/粗线/实心边界 | `image_to_calls.py --tracer contour` | `A-TRACE` 闭合轮廓；`--ocr-text` 可出 `A-TEXT` |
 | 实心厚墙平面图（家装/售楼图） | `image_to_walls.py` | DXF（墙体矩形 + 线work 分层）、`plan.json`（仅墙） |
 | 实心图形（logo、图标、笔画文字） | `image_to_vector.py` | SVG（even-odd 填充）或多边形 + 填充的 DXF |
 
-三者算法完全不同：双线线稿走直线检测配平行线对，实心厚墙走**厚度分离 + 骨架化取中心线**，
-实心图形走**轮廓描摹**。拿错脚本只会得到一堆碎线或错误的墙。
+几条路径算法不同：双线线稿走直线检测配平行线对，扫描件 contour 走**墨迹边界描摹**，
+实心厚墙走**厚度分离 + 骨架化取中心线**，实心图形走**外轮廓 + 孔 + 填充**。
+拿错后端只会得到一堆碎线、双线或错误的墙。
 
 ```text
 线稿图片 → 标定（可选）→ 矢量化
                         ├→ 默认 hybrid：单线 DXF（A-SKETCH / A-TEXT）
+                        ├→ --tracer contour：扫描件边界 DXF（A-TRACE）
                         └→ --mode walls：plan.json → calls.json / .scr / 结构化 DXF
               ↘ 预览 PNG（结构化模式必须人工确认）
 ```
@@ -50,6 +53,37 @@
 | 本项目 hybrid（默认） | 1024 细线 + 12 填充区域 | 0 | 361 ms |
 | 本项目 hybrid + OCR | 719 线 + 12 填充 + 11 文本 | 11（含 BATH） | 667 ms |
 
+## 扫描件轮廓描边（--tracer contour）
+
+`contour_trace.py` 是扫描件后端，做法刻意保持简单：
+
+1. 灰度 → 可选中值/高斯模糊 → 固定阈值（默认 190）或 Otsu；
+2. `findContours(RETR_LIST)` 取全部墨迹边界；
+3. `approxPolyDP` 简化后写闭合 `LWPOLYLINE`（`A-TRACE`）；
+4. 可选 OCR：`sketch_trace.ocr_texts` 识别文字，写 `A-TEXT` 并移除原文字笔画；
+5. `px_per_mm` / `origin` 标定，未标定为像素、`$INSUNITS=0`。
+
+它和 hybrid 的区别是“描边界”还是“抽中心线”：扫描件的粗线、实心墙和手绘线条用边界
+更稳；干净 CAD 线稿用 hybrid 更接近可编辑的中心线。contour 的细线可能出现双线/端帽，
+也不推断墙体、门窗或房间，所以不要把它当成 `--mode walls` 的替代。
+
+文字是这条路径的弱项：默认保留为字形轮廓；需要可编辑文字时加 `--ocr-text`。OCR 不可用
+时会返回 `ocr_hint`，不会静默跳过。
+
+### 扫描 DXF → 建筑语义整理（`semantic_floorplan.py`）
+
+这一步不重新做轮廓，而是把 `contour` DXF 与 OCR/墙体厚度结合：
+
+1. 从原图提取厚墨迹墙带（灰度 + 距离/开运算），输出 `A-WALL` 闭合轮廓 + `A-HATCH`；
+2. 原图 OCR 房间名和尺寸；英文名映射成中文，写成 `A-TEXT` / `A-DIM`；
+3. 扫描 DXF 中落在墙体、文字、尺寸框内的描边剔除；
+4. 其余门弧、窗线、家具、洁具留在 `A-TRACE`；外圈尺寸线进 `A-DIM`。
+
+它不是门窗识别器：`A-TRACE` 里的曲线和短线仍需人工确认。墙带也只看厚度，
+薄隔墙可能留在 `A-TRACE`，所以交付时要把这一点说清楚。实测这张 2257×1876
+户型图得到 8 组墙带、15 个双语房间标签、18 个尺寸文字、636 条线work，
+`audit_errors=0`；回归见 `tests/test_semantic_floorplan.py`。
+
 ## 依赖
 
 ```bash
@@ -61,7 +95,7 @@ pip install opencv-python-headless ezdxf     # 只在跑转换的这一侧需要
 | 输入 | 效果 |
 | --- | --- |
 | CAD 导出的 PDF/PNG 线稿（建议 ≥150 dpi） | 好：墙线与洞口基本全中，见下面实测 |
-| 扫描件（有噪声、轻微倾斜） | 可用但需修补：开 `--deskew --adaptive --despeckle`，召回下降一档 |
+| 扫描件（有噪声、轻微倾斜） | 先试 `--tracer contour`；需要墙体/洞口时再用 `--deskew --adaptive --despeckle --mode walls` |
 | 照片（透视、阴影、手绘） | 不要用：先纠正投影去阴影，或者干脆当底图人工描 |
 
 ## 标定（推荐；不标定则输出像素）
@@ -94,6 +128,11 @@ python3 scripts/image_to_calls.py scan.png --mode walls \
 # 二、保真：出合并吸附后的线段 DXF（墙对画成闭合矩形，其余进 A-TRACE 图层）
 python3 scripts/image_to_calls.py scan.png --mode lines \
     --px-per-mm 0.2 --origin 40,1640 --out-dxf trace.dxf
+
+# 三、扫描件：墨迹边界闭合轮廓（文字默认保留为轮廓）
+python3 scripts/image_to_calls.py scan.png --tracer contour \
+    --px-per-mm 0.2 --origin 40,1640 --out-dxf scan-contour.dxf \
+    --preview scan-check.png
 ```
 
 落图沿用现有链路：

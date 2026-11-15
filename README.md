@@ -66,6 +66,20 @@ tests: 8/8 walls and 10/10 openings on a clean render, 7/8 and 8/10 on a noisy,
 0.5°-rotated scan. DXF output carries safe annotation defaults (TZ_HZ style with
 `txt.shx + gbcbig.shx`, 1:100, 3.5 mm paper text, architectural ticks).
 
+For scans and heavy strokes, `--tracer contour` is a separate scan backend: it traces
+ink boundaries into closed `A-TRACE` polylines instead of thinning to centrelines, keeps
+text as outlines by default, and can turn it into `A-TEXT` with `--ocr-text`. It uses the
+same `--px-per-mm` / `--calibrate` semantics as the rest of the tool; uncalibrated output
+is explicitly unitless. The 1660px→16200mm calibration, unit, resize and origin paths are
+covered by `cad-skill/tests/test_contour_trace.py`.
+
+`scripts/semantic_floorplan.py` takes that scan DXF one step further: thick ink walls go to
+`A-WALL` + `A-HATCH`, OCR room labels and dimension numbers go to `A-TEXT` / `A-DIM`, and
+the remaining door/window/furniture strokes stay on `A-TRACE` for review. It accepts
+Tesseract PSM sets (`--ocr-psm 3,6,11`) and optional position hints for labels the OCR
+misses. The sample floor plan produced 8 wall groups, 15 bilingual room labels, 18
+dimension texts and 0 DXF audit errors; see `cad-skill/tests/test_semantic_floorplan.py`.
+
 `scripts/image_to_vector.py` covers the other half of raster work — solid shapes, logos and
 stroke text — by tracing outer contours plus holes into an even-odd filled SVG or a DXF
 with island-aware hatches, reporting area ratio and IoU against the source image.

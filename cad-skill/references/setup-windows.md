@@ -133,7 +133,8 @@ python scripts\sketch_trace.py --check-ocr
 COM 只在 Windows 上可用。macOS / Linux 上仍可运行：
 
 - `scripts/plan_render.py`：产出 DXF / SVG / `.scr`；
-- `scripts/image_to_calls.py`、`image_to_walls.py`、`image_to_vector.py`：矢量化；
+- `scripts/image_to_calls.py`、`image_to_walls.py`、`image_to_vector.py`、
+  `semantic_floorplan.py`：矢量化与扫描 DXF 语义整理；
 - `scripts/wall_plan.py`：几何换算。
 
 macOS / Linux 如果安装了 CADCraft 0.7+，可用 `cadcraft --control 43210`

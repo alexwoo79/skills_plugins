@@ -19,6 +19,8 @@
 | P1+ | 填充墙洞口（墙带占空比） | `image_to_calls.detect_band_openings` | 合成灰墙 + 真实户型图 |
 | P1+ | 门弧投票抗墙中心线偏移 | `infer_door_swings` 横向/纵向容差搜索 | 偏移 8px 仍能确认 |
 | P1+ | 混合描线（骨架 + 实心轮廓） | `scripts/sketch_trace.py` | demo 图 601 细线 + 85 轮廓 |
+| P1+ | 扫描件轮廓描边后端 | `scripts/contour_trace.py` + `--tracer contour` | 1660px→16200mm 标定、单位、缩放/原点、预览；`test_contour_trace.py` |
+| P1+ | 扫描 DXF 建筑语义整理 | `scripts/semantic_floorplan.py` | 厚墙 `A-WALL/A-HATCH`、OCR `A-TEXT/A-DIM`、线work `A-TRACE`；`test_semantic_floorplan.py` |
 | P1+ | OCR 文本层（中英/可选） | `sketch_trace.ocr_texts` + `ocr_vision.swift` | demo 10 文本，含 BATH |
 | P1+ | 2048 工作画布与分阶段计时 | `sketch_trace.load_ink` / stats | `working_size`、`ocr_ms`、`trace_ms` |
 | P1+ | 背景网格去除 + 共线/端点吸附 | `scripts/image_preprocess.py`、`--clean-geometry` | 网格回归图 360→12 条 `A-SKETCH`；`test_image_preprocess.py` |

@@ -56,7 +56,7 @@ macOS / Linux 检测到 CADCraft 时默认使用 `CADCRAFT` 后端；可用 `CAD
 | 想在 Mac 上先审方案、不打开 CAD | `scripts/plan_render.py --out-svg preview.svg` |
 | 图元多、嫌慢，想选批量脚本还是 DXF | `references/performance.md` |
 | 想要一份照抄就能跑通的两居室示例 | `assets/example-two-bedroom/`（`plan.json` + `runbook.md`） |
-| 手上是图片/扫描件，想转 DXF | `references/image-to-dxf.md`（用法）+ `references/image-vectorize.md`（算法） |
+| 手上是图片/扫描件，想转 DXF | `references/image-to-dxf.md`（用法）+ `references/image-vectorize.md`（算法）；扫描件优先试 `--tracer contour` |
 | 图片有背景网格/碎线，想做前后 DXF 对比 | `references/image-to-dxf.md` + `scripts/dxf_overlay_compare.py` |
 | 要用带真值的图片复测墙体/洞口识别 | `references/image-benchmark.md` + `tests/run_image_benchmark.py` |
 | 想了解商用 image → DWG/DXF 的技术架构 | `references/commercial-image-to-dxf.md` |
@@ -155,6 +155,16 @@ python3 scripts/wall_plan.py plan.json --pretty
 # 忠实描线（默认；不需要 CAD）
 python3 scripts/image_to_calls.py plan.png --out-dxf plan.dxf
 
+# 扫描件：轮廓描边（粗线/实心墙更稳；文字默认保留为轮廓）
+python3 scripts/image_to_calls.py scan.png --tracer contour \
+    --px-per-mm 0.102469 --out-dxf scan.dxf --preview scan-check.png
+
+# 扫描 DXF → 建筑语义整理：厚墙 A-WALL + OCR 房间名/尺寸 + 其余 A-TRACE
+python3 scripts/semantic_floorplan.py scan.png \
+    --source-dxf scan.dxf --px-per-mm 0.102469 \
+    --out-dxf semantic.dxf --preview semantic-check.png \
+    --ocr-langs eng --ocr-psm 3,6,11
+
 # 有真实比例（推荐）：--px-per-mm 或 --calibrate ... --real ...
 python3 scripts/image_to_calls.py plan.png --px-per-mm 0.16686 --out-dxf plan.dxf
 
@@ -179,17 +189,27 @@ python3 scripts/dxf_overlay_compare.py plan.png plan.before.dxf plan.clean.dxf \
 - 图层：细线 `A-SKETCH`（一条笔画一条 PLINE）；**填充的墙/柱**保留为 `A-SOLID`
   闭合轮廓 + `A-HATCH` 实心填充，不压成中线；OCR 文字 `A-TEXT`。
   `--all-skeleton` 可强制全部走单线。结构化模式为 `A-WALL/A-DOOR/A-WINDOW/A-TRACE`。
+- `--tracer contour` 是扫描件后端：按墨迹边界输出闭合 `A-TRACE` 多段线，不做中心线
+  或墙体推断。文字默认保留为轮廓，`--ocr-text` 可转 `A-TEXT`；参数用
+  `--scan-threshold/--scan-blur/--scan-epsilon/--scan-min-area/--scan-max-side`。
+- `semantic_floorplan.py` 在扫描 DXF 上做第一层语义整理：厚墨迹墙带进
+  `A-WALL` + `A-HATCH`，OCR 房间名进 `A-TEXT`，尺寸进 `A-DIM`，其余门弧/窗线/
+  家具留在 `A-TRACE` 待复核。OCR 漏字可用 `--label-hints` 补；门窗候选可用
+  `--opening-hints` 分成 `A-DOOR/A-WINDOW/A-FURN`，但必须逐项对照原图，不要假装已确认。
 - 单位：没标定输出像素（`$INSUNITS=0`）；给了 `--px-per-mm` / `--calibrate` 才是毫米。
 - 注释：默认 `TZ_HZ`（`txt.shx + gbcbig.shx`）、1:100、3.5mm→350mm、建筑斜线；
   见 `references/annotation-defaults.md`。
-- 预处理：`--clean-geometry` = `--remove-grid --snap-geometry`。默认关闭，避免把真实轴网
-  当成背景网格；误删时调高 `--grid-min-lines` 或只开 `--snap-geometry`。
+- 预处理：`--clean-geometry` = `--remove-grid --snap-geometry`（hybrid/hough）。默认关闭，
+  避免把真实轴网当成背景网格；误删时调高 `--grid-min-lines` 或只开 `--snap-geometry`。
+  contour 目前不做网格去除/吸附。
 - 完整参数、尺寸链标定、OCR、质量与排障：`references/image-to-dxf.md`。
 
 其他图种：
 
 | 图 | 脚本 | 输出 |
 | --- | --- | --- |
+| 扫描件（粗线/实心扫描） | `scripts/image_to_calls.py --tracer contour` | `A-TRACE` 闭合轮廓 + 可选 `A-TEXT` |
+| 扫描 DXF 语义整理 | `scripts/semantic_floorplan.py` | `A-WALL/A-HATCH/A-TEXT/A-DIM/A-TRACE` |
 | 实心厚墙平面图（售楼/家装） | `scripts/image_to_walls.py` | `A-WALL` 墙体 + 全部线work（默认不裁剪、不清理） |
 | logo / 图标 / 实心图形 | `scripts/image_to_vector.py` | SVG 或带填充的 DXF |
 
@@ -237,6 +257,8 @@ CAD 不在手边时用 DXF：`plan.dxf` 可直接在 CAD 里打开另存 DWG，�
 - 文字与尺寸不压住主要建筑线
 - 尺寸标注与用户确认的参数一致（墙厚、开间、门窗宽）
 - 描图来的门：合页侧与开启方向和原图一致；`summary.needs_review` 为 0 或已逐条确认
+- 扫描语义图：`A-WALL` 只代表厚墙带，薄隔墙不能假装已并入；`A-TRACE` 的门窗/家具
+  已逐项复核；OCR 标签与尺寸已对照原图，`room_labels_from_hints` 已确认或为 0
 - 同一份 plan.json 的 calls 与 DXF 图元一致
 - 已保存为 DWG/DXF，且路径为绝对路径
 
