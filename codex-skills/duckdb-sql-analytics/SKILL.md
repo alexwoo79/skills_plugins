@@ -22,6 +22,8 @@ DuckDB Report Studio 提供工作区 UI、`duckdb-report-cli`、Quarto 渲染和
 
 纯 CLI 分析可以不安装桌面程序；涉及工作区、Workflow、QMD 或发布包时优先使用配套
 CLI，并阅读 [references/duckdb-report-integration.md](references/duckdb-report-integration.md)。
+DuckDB Report Studio 的 macOS、Windows 和 Linux 发布 ZIP 也包含本 Skill 的
+`skill/duckdb-sql-analytics/` 目录，可直接复制到 `${CODEX_HOME:-$HOME/.codex}/skills/`。
 
 ## 目标
 
