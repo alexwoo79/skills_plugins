@@ -14,9 +14,9 @@ description: >-
 DuckDB Report Studio 提供本地工作区、`duckdb-report-cli`、Quarto 渲染和报告产物管理：
 
 - 源码与使用说明：<https://github.com/alexwoo79/duckdb-report>
-- 安装与运行时：<https://github.com/alexwoo79/duckdb-report/blob/main/docs/INSTALL.md>
+- 安装与运行时：<https://github.com/alexwoo79/duckdb-report/blob/simple/docs/INSTALL.md>
 - 桌面项目中的 Agent 协作说明：
-  <https://github.com/alexwoo79/duckdb-report#agent-协作>
+  <https://github.com/alexwoo79/duckdb-report/tree/simple#agent-协作>
 
 纯 CLI 分析可以不安装桌面程序。涉及现有工作区、QMD 或报告产物时，优先使用配套
 CLI，并阅读 [references/duckdb-report-integration.md](references/duckdb-report-integration.md)。

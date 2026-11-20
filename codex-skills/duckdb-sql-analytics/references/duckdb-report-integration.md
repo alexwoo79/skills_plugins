@@ -6,8 +6,8 @@
 配套文档：
 
 - 源码与 README：<https://github.com/alexwoo79/duckdb-report>
-- 安装、CLI 与运行时：<https://github.com/alexwoo79/duckdb-report/blob/main/docs/INSTALL.md>
-- Agent 协作说明：<https://github.com/alexwoo79/duckdb-report#agent-协作>
+- 安装、CLI 与运行时：<https://github.com/alexwoo79/duckdb-report/blob/simple/docs/INSTALL.md>
+- Agent 协作说明：<https://github.com/alexwoo79/duckdb-report/tree/simple#agent-协作>
 
 ## 应用边界
 
